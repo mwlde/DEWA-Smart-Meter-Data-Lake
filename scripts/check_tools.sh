@@ -1,6 +1,6 @@
 #!/bin/bash
-# Quick check that every project tool is installed and Hadoop is up.
-# Run inside the container:  bash /home/hadoop/dewa/scripts/check_tools.sh
+#quick check that every project tool is installed and hadoop is up.
+#run inside the container:  bash /home/hadoop/dewa/scripts/check_tools.sh
 source ~/.bashrc
 
 ok() { printf "  %-8s %s\n" "$1" "$2"; }

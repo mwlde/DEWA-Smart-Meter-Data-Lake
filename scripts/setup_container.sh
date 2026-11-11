@@ -1,18 +1,18 @@
 #!/bin/bash
-# One-time setup of the project tools inside the Hadoop container:
-# Hive 3.1.3, Spark 3.5, Kafka 3.9 and HBase 2.5, all on Java 8.
+#one-time setup of the project tools inside the hadoop container:
+#hive 3.1.3, spark 3.5, kafka 3.9 and hbase 2.5, all on java 8.
 #
-# BEFORE running this, install Java 8 as root. In the MAC terminal:
-#   docker exec -u root hadoop bash -c "apt-get update && apt-get install -y openjdk-8-jdk-headless curl python3"
+#before running this, install java 8 as root. in the mac terminal:
+#  docker exec -u root hadoop bash -c "apt-get update && apt-get install -y openjdk-8-jdk-headless curl python3"
 #
-# Then INSIDE the container (as user hadoop):
-#   bash /home/hadoop/dewa/scripts/setup_container.sh
+#then inside the container (as user hadoop):
+#  bash /home/hadoop/dewa/scripts/setup_container.sh
 #
-# Safe to run again: anything already installed is skipped.
-# If the container is ever lost, recreate it and run both steps again.
+#safe to run again: anything already installed is skipped.
+#if the container is ever lost, recreate it and run both steps again.
 set -e
 
-# Versions (change here if a download is not found)
+#versions (change here if a download is not found)
 HIVE_VERSION=3.1.3
 SPARK_VERSION=3.5.6
 KAFKA_VERSION=3.9.1
@@ -22,7 +22,7 @@ MIRROR=https://archive.apache.org/dist
 
 say() { echo; echo "=== $1"; }
 
-# ---------------------------------------------------------------- Java 8
+#---------------------------------------------------------------- java 8
 J8=$(ls -d /usr/lib/jvm/java-8-openjdk-* 2>/dev/null | head -1)
 if [ -z "$J8" ]; then
   echo "Java 8 is not installed. Run the root command at the top of this script first."
@@ -30,16 +30,16 @@ if [ -z "$J8" ]; then
 fi
 say "Java 8 found at $J8"
 
-# Point Hadoop at Java 8 (Hive 3 fails on Java 11)
+#point hadoop at java 8 (hive 3 fails on java 11)
 HENV=$HADOOP_HOME/etc/hadoop/hadoop-env.sh
 if [ -z "$HADOOP_HOME" ]; then HADOOP_HOME=/home/hadoop/hadoop; HENV=$HADOOP_HOME/etc/hadoop/hadoop-env.sh; fi
 sed -i '/^export JAVA_HOME=/d' "$HENV"
 echo "export JAVA_HOME=$J8" >> "$HENV"
 export JAVA_HOME=$J8
 
-# ---------------------------------------------------------------- downloads
+#---------------------------------------------------------------- downloads
 mkdir -p ~/downloads
-fetch() {  # fetch <url> <install-dir-name>
+fetch() {  #fetch <url> <install-dir-name>
   local url=$1 name=$2 file=~/downloads/$(basename "$1")
   if [ -d ~/"$name" ]; then echo "$name already installed, skipping"; return; fi
   if [ ! -f "$file" ]; then
@@ -67,7 +67,7 @@ fetch $MIRROR/kafka/$KAFKA_VERSION/kafka_$SCALA_VERSION-$KAFKA_VERSION.tgz kafka
 say "HBase $HBASE_VERSION"
 fetch $MIRROR/hbase/$HBASE_VERSION/hbase-$HBASE_VERSION-hadoop3-bin.tar.gz hbase
 
-# ---------------------------------------------------------------- environment
+#---------------------------------------------------------------- environment
 if ! grep -q "DEWA project tools" ~/.bashrc; then
   cat >> ~/.bashrc <<EOF
 
@@ -88,9 +88,9 @@ export KAFKA_HOME=/home/hadoop/kafka HBASE_HOME=/home/hadoop/hbase
 export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop
 export PATH=$JAVA_HOME/bin:$HADOOP_HOME/bin:$HIVE_HOME/bin:$SPARK_HOME/bin:$KAFKA_HOME/bin:$HBASE_HOME/bin:$PATH
 
-# ---------------------------------------------------------------- Hive config
+#---------------------------------------------------------------- hive config
 say "Configuring Hive"
-# Guava clash between Hive 3 and Hadoop 3 (NoSuchMethodError on start-up)
+#guava clash between hive 3 and hadoop 3 (nosuchmethoderror on start-up)
 rm -f $HIVE_HOME/lib/guava-19.0.jar
 cp -n $HADOOP_HOME/share/hadoop/common/lib/guava-*.jar $HIVE_HOME/lib/ 2>/dev/null || true
 
@@ -110,7 +110,7 @@ cat > $HIVE_HOME/conf/hive-site.xml <<'EOF'
 </configuration>
 EOF
 
-# ---------------------------------------------------------------- Spark config
+#---------------------------------------------------------------- spark config
 say "Configuring Spark"
 cat > $SPARK_HOME/conf/spark-env.sh <<EOF
 export JAVA_HOME=$J8
@@ -119,7 +119,7 @@ EOF
 cp -n $SPARK_HOME/conf/log4j2.properties.template $SPARK_HOME/conf/log4j2.properties 2>/dev/null || true
 sed -i 's/^rootLogger.level = info/rootLogger.level = warn/' $SPARK_HOME/conf/log4j2.properties 2>/dev/null || true
 
-# ---------------------------------------------------------------- Kafka config
+#---------------------------------------------------------------- kafka config
 say "Configuring Kafka (single node, KRaft mode, no ZooKeeper)"
 if [ ! -f /home/hadoop/kafka-data/meta.properties ]; then
   sed -i 's#^log.dirs=.*#log.dirs=/home/hadoop/kafka-data#' $KAFKA_HOME/config/kraft/server.properties
@@ -129,7 +129,7 @@ else
   echo "Kafka storage already formatted, skipping"
 fi
 
-# ---------------------------------------------------------------- HBase config
+#---------------------------------------------------------------- hbase config
 say "Configuring HBase (standalone mode)"
 echo "export JAVA_HOME=$J8" >> $HBASE_HOME/conf/hbase-env.sh
 cat > $HBASE_HOME/conf/hbase-site.xml <<'EOF'
@@ -142,7 +142,7 @@ cat > $HBASE_HOME/conf/hbase-site.xml <<'EOF'
 </configuration>
 EOF
 
-# ---------------------------------------------------------------- Hive metastore
+#---------------------------------------------------------------- hive metastore
 say "Creating Hive folders in HDFS and the metastore"
 hdfs dfs -mkdir -p /tmp /user/hive/warehouse
 hdfs dfs -chmod g+w /tmp /user/hive/warehouse
