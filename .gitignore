@@ -1,0 +1,9 @@
+# Generated data: too large for GitHub, regenerate with data_generator/generate.py
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Mac
+.DS_Store
