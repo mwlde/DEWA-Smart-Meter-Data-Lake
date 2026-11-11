@@ -1,12 +1,12 @@
--- Raw zone of the data lake: Hive external tables over the generated CSVs in HDFS.
--- External means Hive only reads the files; dropping a table never deletes the data.
+--raw zone of the data lake: hive external tables over the generated csvs in hdfs.
+--external means hive only reads the files; dropping a table never deletes the data.
 --
--- Expects the data in HDFS at:
---   /user/hadoop/dewa/raw/meters/meters.csv
---   /user/hadoop/dewa/raw/readings/dt=YYYY-MM-DD/readings.csv
---   /user/hadoop/dewa/raw/ground_truth/ground_truth.csv
+--expects the data in hdfs at:
+--  /user/hadoop/dewa/raw/meters/meters.csv
+--  /user/hadoop/dewa/raw/readings/dt=YYYY-MM-DD/readings.csv
+--  /user/hadoop/dewa/raw/ground_truth/ground_truth.csv
 --
--- Run with: hive -f hive/01_raw_zone.sql
+--run with: hive -f hive/01_raw_zone.sql
 
 CREATE DATABASE IF NOT EXISTS dewa;
 USE dewa;
@@ -30,7 +30,7 @@ CREATE EXTERNAL TABLE raw_readings (
   meter_type        STRING,
   premise_id        STRING,
   area              STRING,
-  ts                STRING,   -- ISO format, e.g. 2026-07-01T00:15:00
+  ts                STRING,   --iso format, e.g. 2026-07-01T00:15:00
   interval_value    DOUBLE,
   unit              STRING,
   cumulative_value  DOUBLE,
@@ -42,7 +42,7 @@ STORED AS TEXTFILE
 LOCATION '/user/hadoop/dewa/raw/readings'
 TBLPROPERTIES ('skip.header.line.count'='1');
 
--- Register the dt=... folders as partitions
+--register the dt=... folders as partitions
 MSCK REPAIR TABLE raw_readings;
 
 DROP TABLE IF EXISTS raw_ground_truth;
@@ -58,7 +58,7 @@ STORED AS TEXTFILE
 LOCATION '/user/hadoop/dewa/raw/ground_truth'
 TBLPROPERTIES ('skip.header.line.count'='1');
 
--- Checks (screenshot these for the report)
+--checks (screenshot these for the report)
 SHOW PARTITIONS raw_readings;
 
 SELECT dt, meter_type, COUNT(*) AS readings, ROUND(SUM(interval_value), 1) AS total

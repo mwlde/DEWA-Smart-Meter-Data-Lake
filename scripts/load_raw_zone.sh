@@ -1,7 +1,7 @@
 #!/bin/bash
-# Copies the generated data into the HDFS raw zone.
-# Run INSIDE the Hadoop container, from the folder that contains data/
-#   bash scripts/load_raw_zone.sh
+#copies the generated data into the hdfs raw zone.
+#run inside the hadoop container, from the folder that contains data/
+#  bash scripts/load_raw_zone.sh
 set -e
 
 BASE=/user/hadoop/dewa/raw
