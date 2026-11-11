@@ -1,9 +1,14 @@
-# Generated data: too large for GitHub, regenerate with data_generator/generate.py
+#generated data: too large for github, regenerate with data_generator/generate.py
 data/
 
-# Python
+#python
 __pycache__/
 *.pyc
 
-# Mac
+#mac
 .DS_Store
+
+#hive and spark local files (created when run from the repo folder)
+derby.log
+metastore_db/
+spark-warehouse/

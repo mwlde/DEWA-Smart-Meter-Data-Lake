@@ -1,0 +1,5 @@
+#keep the docker build small: none of these are needed inside the image
+.git
+data/
+screenshots/
+**/__pycache__

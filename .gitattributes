@@ -1,0 +1,9 @@
+#keep unix line endings on windows checkouts. scripts with windows (CRLF) line
+#endings fail inside the linux container with errors like "$'\r': command not found".
+*.sh       text eol=lf
+*.py       text eol=lf
+*.sql      text eol=lf
+*.xml      text eol=lf
+*.md       text eol=lf
+Dockerfile text eol=lf
+*.png      binary
