@@ -4,43 +4,139 @@ ISIT312 Big Data Management group project, Autumn 2026.
 
 A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Structured Streaming path for near-real-time leak detection, HBase for per-meter lookups, HDFS lake zones, and a Hive star schema for reporting.
 
+- **Setting up on Mac or Windows:** [SETUP.md](SETUP.md)
+- **What is done and what is left:** [TODO.md](TODO.md)
+- **Results of every run, for the report:** [RESULTS.md](RESULTS.md)
+
 ## Folders
 
 | Folder | Contents |
 | --- | --- |
-| `data_generator/` | Script that creates synthetic 15-minute meter readings with injected anomalies |
+| `data_generator/` | Creates synthetic 15-minute meter readings with injected anomalies |
+| `docker/`, `Dockerfile` | Builds the Hadoop container (see SETUP.md) |
+| `scripts/` | Container setup, loading the raw zone, starting and resetting Kafka |
+| `hive/` | Hive table definitions |
+| `streaming/` | Replay into Kafka, baseline batch job, streaming detection job |
+| `evaluation/` | Compares alerts with the injected anomalies |
+| `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
-| `scripts/` | Shell scripts, e.g. `load_raw_zone.sh` copies `data/` into the HDFS raw zone |
-| `hive/` | Hive SQL, e.g. `01_raw_zone.sql` creates external tables over the raw zone |
 
-More folders (ingestion, streaming, HBase, benchmark) are added as the build progresses.
+## How the synthetic data is generated
 
-## Generate the data
+DEWA does not publish its 15-minute meter readings, so the project generates realistic readings with `data_generator/generate.py`. It uses only Python's standard library and a fixed random seed (42), so the same command always produces identical data on any computer.
 
-Needs Python 3 only, no packages to install.
+**Meters.** Each premise has one water meter and one electricity meter. Premises are 60% apartments, 25% villas and 15% commercial, spread across ten Dubai areas (Al Barsha, Deira, Jumeirah, Dubai Marina, Al Quoz, Mirdif, Business Bay, International City, Al Nahda, Jebel Ali).
+
+**Consumption.** Every meter reports once every 15 minutes (96 readings a day), the interval DEWA reports for its smart meters. Each reading is built from:
+
+1. **A daily average for the premise type:**
+
+   | Premise | Water (imperial gallons a day) | Electricity (kWh a day) |
+   | --- | --- | --- |
+   | Apartment | 100 | 25 |
+   | Villa | 400 | 120 |
+   | Commercial | 600 | 200 |
+
+2. **A per-premise factor** between 0.6 and 1.5, so no two homes use exactly the same amount.
+3. **A daily profile** spreading the day's use over the 96 intervals. Homes have morning (06:00 to 08:00) and evening (18:00 to 20:00) water peaks and almost no use between midnight and 05:00; their electricity rises through the afternoon. Commercial premises follow office hours (08:00 to 17:00).
+4. **A seasonal factor** by month. Electricity is highest in July and August (air conditioning) and about half of that in January; water varies less (0.85 to 1.1).
+5. **Random noise** of about 25% on every reading. In the quiet night hours a home's water reading is exactly zero 60% of the time, as real meters show.
+
+Each reading also carries a running total (`cumulative_value`, the meter register) and a signal quality score (70 to 100).
+
+**Anomalies.** 3% of meters get one anomaly each, starting after the first day (day 1 stays clean, because the pipeline uses it as history to learn each meter's normal range). Water meters mostly get leaks, because leak detection is the project's main use case.
+
+| Type | Meters | Share | What is injected |
+| --- | --- | --- | --- |
+| leak | Water | 50% of water anomalies | A constant extra flow of 1 to 6 gallons per 15 minutes (plus or minus 10%), from the start time until the end of the data, as an unrepaired leak would |
+| spike | Both | 15% water, 30% electricity | One reading of 10 to 30 times the meter's normal peak (a meter glitch) |
+| stuck | Both | 15% water, 30% electricity | Zero consumption for 6 to 48 hours (the meter stops recording) |
+| silent | Both | 10% water, 20% electricity | No readings at all for 2 to 12 hours (communication failure) |
+| negative | Both | 10% water, 20% electricity | One negative reading (meter fault) |
+
+Every anomaly is written to `data/ground_truth.csv` with its meter and start and end time. The evaluation script compares the pipeline's alerts against this file, which is how detection rate and detection time are measured exactly.
+
+**Assumptions.** The daily averages, profiles and seasonal factors are our own estimates. They are to be calibrated against DEWA's annual statistics on Dubai Pulse (see TODO.md), and the report states them as assumptions.
+
+## Running the pipeline
+
+All commands below are typed inside the container, from `/home/hadoop/dewa` (see SETUP.md for getting there).
+
+### 1. Generate the data
 
 ```
 python3 data_generator/generate.py
 ```
 
-That makes a quick test set: 1,000 meters for 7 days, about 670,000 readings. For the full project dataset:
-
-```
-python3 data_generator/generate.py --meters 10000 --days 30
-```
-
-That is about 28.8 million readings and roughly 2 GB, so it takes several minutes.
-
-The seed is fixed, so everyone who runs the same command gets identical data.
-
-## Output
+A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project dataset: `--meters 10000 --days 30` (about 28.8 million readings, roughly 2 GB).
 
 | File | What it is |
 | --- | --- |
 | `data/meters.csv` | One row per meter: ID, type, premise, premise type, area |
 | `data/readings/dt=YYYY-MM-DD/readings.csv` | One file per day, in the folder layout Hive uses for partitions |
-| `data/ground_truth.csv` | Every injected anomaly with its start and end time, used to measure detection |
+| `data/ground_truth.csv` | Every injected anomaly with its start and end time |
 
-Anomaly types: `leak` (water only, constant extra flow until the end of the data), `spike` (one very high reading), `stuck` (zero consumption for 6 to 48 hours), `silent` (no readings for 2 to 12 hours), `negative` (one negative reading).
+Timestamps are Dubai local time. Water is in imperial gallons, electricity in kWh.
 
-Timestamps are Dubai local time. Water is in imperial gallons, electricity in kWh. Consumption levels are placeholders to be calibrated against DEWA's annual statistics on Dubai Pulse.
+### 2. Load the raw zone (HDFS and Hive)
+
+```
+bash scripts/load_raw_zone.sh 2>/dev/null
+hive -f hive/01_raw_zone.sql 2>/dev/null
+```
+
+### 3. Streaming: live leak detection
+
+Day 1 of the data is history: the batch layer builds each meter's normal range from it. Days 2 onwards are replayed into Kafka as a live stream, one 15-minute interval per second (a simulated day every 96 seconds).
+
+Use three container terminals (a new terminal tab, then `docker exec -it hadoop bash` and `cd /home/hadoop/dewa`).
+
+**Terminal 1: Kafka, baseline, then the detection job**
+
+```
+bash scripts/start_kafka.sh
+spark-submit streaming/baseline.py 2>/dev/null
+spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 streaming/detect_stream.py --kafka-alerts 2>/dev/null
+```
+
+The first run of the last command downloads the Kafka connector for Spark (about a minute). Leave it running: it prints each batch of alerts as it raises them.
+
+**Terminal 2: replay the readings into Kafka**
+
+```
+python3 streaming/replay.py --interval 1 | kafka-console-producer.sh --bootstrap-server localhost:9092 --topic meter-readings --property parse.key=true --property key.separator='|'
+```
+
+It prints each interval as it sends it. Six simulated days take about 10 minutes.
+
+**Terminal 3 (optional): watch the alerts topic**
+
+```
+kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic alerts
+```
+
+When the replay finishes (terminal 2 prints `Replay finished` and returns to the prompt), the detection job stops by itself 30 seconds later and prints `All queries stopped.` Stop terminal 3 with Ctrl+C. (To change the wait, use `--idle-stop SECONDS`; `--idle-stop 0` runs until you press Ctrl+C.)
+
+To run the stream again from scratch: `bash scripts/reset_stream.sh`.
+
+### 4. Evaluate
+
+```
+spark-submit evaluation/evaluate.py 2>/dev/null
+```
+
+Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies.
+
+## Detection rules
+
+Thresholds are set at the top of `streaming/detect_stream.py`.
+
+| Alert | Rule |
+| --- | --- |
+| leak | Water meter, every reading in a 1-hour window between 01:00 and 04:00 above 0.5 gallons (minimum night flow analysis) |
+| spike | One reading above 4 times the meter's 99th percentile from the baseline |
+| negative | A negative reading |
+| stuck | Zero consumption for 6 hours |
+| silent | Fewer than 4 readings in a 1-hour window |
+
+**Latest result** (1,000 meters, 6 live days through Kafka, 30 injected anomalies): all 30 detected, no false alerts, alerts 0.5 to 4.5 seconds after the reading arrived. Full figures and caveats are in [RESULTS.md](RESULTS.md).
