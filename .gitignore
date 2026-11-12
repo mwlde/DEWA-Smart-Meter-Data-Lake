@@ -12,3 +12,6 @@ __pycache__/
 derby.log
 metastore_db/
 spark-warehouse/
+
+#streaming run output (scripts/run_stream.sh)
+logs/

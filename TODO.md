@@ -24,7 +24,7 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [x] First live run of the streaming job with Kafka in the container (1,000 meters: 30 of 30 anomalies detected, no false alerts)
 - [x] Zones built in the container (671,788 cleansed, 4 quarantined, 7,000 daily rows); HBase started and tables created
 - [x] Full pipeline with HBase (run 3): 30 of 30 detected, no false alerts, 30 rows in HBase
-- [ ] Re-run `spark-submit evaluation/evaluate.py 2>/dev/null` on the run 3 alerts (still in HDFS) for the corrected latency figures (first alert per anomaly), and update RESULTS.md
+- [x] Re-ran the evaluation on the run 3 alerts with the first alert per anomaly (RESULTS.md, correction section)
 - [ ] Next streaming run: latency is then measured to when the alert was ready (`emitted_ts`), not the micro-batch start
 - [ ] Test-build the `Dockerfile` (on Maria's Mac) and run `SETUP.md` start to finish, so Windows users can follow it
 - [x] Replace `OWNER` in the clone commands in `SETUP.md` with the GitHub account name

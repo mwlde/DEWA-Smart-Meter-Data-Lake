@@ -9,7 +9,19 @@ The "median latency, real" figures in runs 2 and 3 below are too low, for two re
 1. **Fastest alert, not first alert.** `evaluate.py` took the fastest of each anomaly's alerts. A leak raises an alert for every window that shows it, so this picked the quickest repeat and hid slower first alerts. The clearest case: in run 2 the first silent alert took about 26 seconds (Spark was still starting), but the table shows 4.35 s for silent. The script now takes each anomaly's **first** alert.
 2. **Measured to the start of the micro-batch.** `alert_ts` is when the micro-batch that raised the alert started, before Spark had computed it. The streaming job now also records `emitted_ts`, when the alert was computed and ready to publish, and latency is measured to that. In a test here, the gap between the two was about 1.3 to 1.7 seconds per alert.
 
-What to do: re-run `spark-submit evaluation/evaluate.py 2>/dev/null` on the run 3 alerts (still in HDFS) to fix reason 1 now; reason 2 is fixed from the next streaming run on (old alerts have no `emitted_ts`, so the script falls back to `alert_ts` and says so). Until then, quote the figures below as lower bounds. Detection rates and false alert counts are not affected.
+Reason 2 is fixed from the next streaming run on (old alerts have no `emitted_ts`, so the script falls back to `alert_ts` and says so). Detection rates and false alert counts are not affected.
+
+**Run 3 re-evaluated with the first alert per anomaly** (same alerts, latency still to the micro-batch start, so add roughly 1.5 s for the true time to alert):
+
+| Type | Median latency, fastest alert (old) | Median latency, first alert (corrected) |
+| --- | --- | --- |
+| leak | 4.35 s | 4.79 s |
+| negative | 1.00 s | 1.00 s |
+| silent | 4.24 s | 6.26 s |
+| spike | 0.56 s | 0.56 s |
+| stuck | 5.25 s | 5.36 s |
+
+Silent moved most: one silent anomaly began while Spark was still warming up at the start of the stream, so its first alert was slow. All types are still about 6 seconds or less, far under the 5-minute requirement. Screenshot: `7-1_evaluation_run3_first_alert.png`.
 
 ## Run 3: full pipeline with HBase (11 November 2026)
 

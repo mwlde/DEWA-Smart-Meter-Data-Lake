@@ -14,7 +14,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | --- | --- |
 | `data_generator/` | Creates synthetic 15-minute meter readings with injected anomalies |
 | `docker/`, `Dockerfile` | Builds the Hadoop container (see SETUP.md) |
-| `scripts/` | Container setup, loading the raw zone, starting Kafka and HBase, resetting a run |
+| `scripts/` | Container setup, loading the raw zone, starting Kafka and HBase, one-command streaming run, resetting a run |
 | `hive/` | Hive table definitions (raw zone, cleansed and curated zones) |
 | `batch/` | Batch layer: builds the cleansed, quarantine and curated zones |
 | `hbase/` | Example HBase queries on the serving layer |
@@ -23,6 +23,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | `evaluation/` | Compares alerts with the injected anomalies |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
+| `logs/` | Output of the detection job from `run_stream.sh` (not committed) |
 
 ## How the synthetic data is generated
 
@@ -103,36 +104,31 @@ hive -f hive/02_lake_zones.sql 2>/dev/null
 
 Day 1 of the data is history: the batch layer builds each meter's normal range from it. Days 2 onwards are replayed into Kafka as a live stream, one 15-minute interval per second (a simulated day every 96 seconds).
 
-Use three container terminals (a new terminal tab, then `docker exec -it hadoop bash` and `cd /home/hadoop/dewa`).
-
-**Terminal 1: Kafka, HBase, baseline, then the detection job**
+**One terminal, one command** (the normal way):
 
 ```
-bash scripts/start_kafka.sh
-bash scripts/start_hbase.sh
-spark-submit streaming/baseline.py 2>/dev/null
-spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 streaming/detect_stream.py --kafka-alerts --hbase 2>/dev/null
+bash scripts/run_stream.sh
 ```
 
-The first run of the last command downloads the Kafka connector for Spark (about a minute). It checks that Kafka, the baseline and HBase are ready, prints `waiting for readings`, then prints each batch of alerts as it raises them. Leave out `--hbase` to run without HBase.
+It runs every step in order and says which one it is on: reset the last run, start Kafka and HBase, build the baseline if it is missing, start the detection job in the background, replay the six live days (about 10 minutes), wait for the detection job to stop, then print the evaluation. Add `--no-hbase` to run without HBase.
 
-**Terminal 2: replay the readings into Kafka**
-
-```
-python3 streaming/replay.py --interval 1 | kafka-console-producer.sh --bootstrap-server localhost:9092 --topic meter-readings --property parse.key=true --property key.separator='|'
-```
-
-It prints each interval as it sends it. Six simulated days take about 10 minutes.
-
-**Terminal 3 (optional): watch the alerts topic**
+The detection job's output (every batch of alerts) goes to `logs/stream.log`. To watch the alerts arrive, open a **second** terminal (new terminal tab, `docker exec -it hadoop bash`, `cd /home/hadoop/dewa`) and run:
 
 ```
-kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic alerts
+tail -f logs/stream.log
 ```
 
-When the replay finishes (terminal 2 prints `Replay finished` and returns to the prompt), the detection job stops by itself 30 seconds later and prints `All queries stopped.` Stop terminal 3 with Ctrl+C. (To change the wait, use `--idle-stop SECONDS`; `--idle-stop 0` runs until you press Ctrl+C.)
+Stop it with Ctrl+C when the run is over; that only stops the watching, not the run.
 
-To run the stream again from scratch: `bash scripts/reset_stream.sh`.
+**By hand, three terminals** (only if you want to run each part yourself):
+
+| Terminal | Command | Leave it |
+| --- | --- | --- |
+| 1 | `bash scripts/reset_stream.sh`, `bash scripts/start_hbase.sh`, then `spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 streaming/detect_stream.py --kafka-alerts --hbase 2>/dev/null` | running; start terminal 2 once it prints `waiting for readings` |
+| 2 | `python3 streaming/replay.py --interval 1 \| kafka-console-producer.sh --bootstrap-server localhost:9092 --topic meter-readings --property parse.key=true --property key.separator='\|'` | until it prints `Replay finished`; terminal 1 then stops by itself 30 seconds later |
+| 3 (optional) | `kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic alerts` | Ctrl+C when done |
+
+If the baseline is missing, run `spark-submit streaming/baseline.py 2>/dev/null` in terminal 1 first. `--idle-stop SECONDS` changes the 30-second wait; `--idle-stop 0` runs until Ctrl+C.
 
 ### 4. Look at the serving layer (HBase)
 
@@ -147,6 +143,8 @@ bash scripts/hbase_queries.sh
 Shows the open alerts (one row per meter and alert type), one meter's newest readings, and the history of one alert. The file uses meter W0000108, which has a leak in the default dataset; with other data, change it to a meter from your own alerts.
 
 ### 5. Evaluate
+
+`run_stream.sh` already does this at the end. To run it again on the alerts in HDFS:
 
 ```
 spark-submit evaluation/evaluate.py 2>/dev/null
