@@ -103,7 +103,7 @@ def make_meters(n, rng):
     return meters
 
 
-def plan_anomalies(meters, start, days, rate, rng):
+def plan_anomalies(meters, start, days, rate, rng, leak_min=1.0, leak_max=6.0):
     """Pick meters and inject one anomaly each, with known start and end."""
     total_intervals = days * INTERVALS_PER_DAY
     plans = {}
@@ -119,7 +119,7 @@ def plan_anomalies(meters, start, days, rate, rng):
         start_idx = rng.randrange(INTERVALS_PER_DAY, total_intervals - INTERVALS_PER_DAY)
         if kind == "leak":
             length = total_intervals - start_idx            #leaks run until repaired (end of data)
-            extra = rng.uniform(1.0, 6.0)                   #gallons added per 15 mins
+            extra = rng.uniform(leak_min, leak_max)         #gallons added per 15 mins
         elif kind == "stuck":
             length, extra = rng.randrange(24, 192), 0.0     #6 to 48 hrs
         elif kind == "silent":
@@ -145,6 +145,8 @@ def main():
     p.add_argument("--start", default="2026-07-01", help="first day, YYYY-MM-DD")
     p.add_argument("--seed", type=int, default=42, help="same seed gives identical data")
     p.add_argument("--anomaly-rate", type=float, default=0.03, help="share of meters with an anomaly")
+    p.add_argument("--leak-min", type=float, default=1.0, help="smallest leak, gallons per 15 mins")
+    p.add_argument("--leak-max", type=float, default=6.0, help="largest leak, gallons per 15 mins")
     p.add_argument("--out", default="data")
     args = p.parse_args()
     if args.days < 3:
@@ -153,7 +155,7 @@ def main():
     rng = random.Random(args.seed)
     start = datetime.strptime(args.start, "%Y-%m-%d")
     meters = make_meters(args.meters, rng)
-    plans = plan_anomalies(meters, start, args.days, args.anomaly_rate, rng)
+    plans = plan_anomalies(meters, start, args.days, args.anomaly_rate, rng, args.leak_min, args.leak_max)
     profiles = {}
     os.makedirs(args.out, exist_ok=True)
 
