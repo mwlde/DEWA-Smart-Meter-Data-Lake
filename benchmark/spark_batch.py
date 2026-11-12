@@ -25,6 +25,22 @@ READING_SCHEMA = ("meter_id STRING, meter_type STRING, premise_id STRING, area S
                   "interval_value DOUBLE, unit STRING, cumulative_value DOUBLE, signal_quality INT")
 
 
+def leak_nights(raw, min_flow=0.5):
+    """The night-flow leak rule on a DataFrame of raw readings: one row per leaking
+    meter and night, with the number of 1-hour windows that were all above min_flow.
+    Also used by evaluation/sensitivity.py, so both test exactly the same rule."""
+    night = (raw.where((F.col("meter_type") == "water") & F.substring("ts", 12, 2).isin("01", "02", "03"))
+             .withColumn("night", F.substring("ts", 1, 10)))
+    w = Window.partitionBy("meter_id", "night").orderBy("ts").rowsBetween(0, 3)
+    fmt = "yyyy-MM-dd'T'HH:mm:ss"
+    return (night.withColumn("min_flow", F.min("interval_value").over(w))
+            .withColumn("n", F.count("*").over(w))
+            .withColumn("last_ts", F.max("ts").over(w))
+            .where((F.col("n") == 4) & (F.col("min_flow") > min_flow) &
+                   (F.unix_timestamp("last_ts", fmt) - F.unix_timestamp("ts", fmt) == 2700))
+            .groupBy("meter_id", "night").agg(F.count("*").alias("leak_windows")))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--base", default="/user/hadoop/dewa")
@@ -42,16 +58,7 @@ def main():
         except Exception as e:
             fail("running the leak check", f"cannot read {args.base}/raw/readings ({str(e).splitlines()[0][:200]})",
                  "load it with: bash scripts/load_raw_zone.sh")
-        night = (raw.where((F.col("meter_type") == "water") & F.substring("ts", 12, 2).isin("01", "02", "03"))
-                 .withColumn("night", F.substring("ts", 1, 10)))
-        w = Window.partitionBy("meter_id", "night").orderBy("ts").rowsBetween(0, 3)
-        fmt = "yyyy-MM-dd'T'HH:mm:ss"
-        leaks = (night.withColumn("min_flow", F.min("interval_value").over(w))
-                 .withColumn("n", F.count("*").over(w))
-                 .withColumn("last_ts", F.max("ts").over(w))
-                 .where((F.col("n") == 4) & (F.col("min_flow") > 0.5) &
-                        (F.unix_timestamp("last_ts", fmt) - F.unix_timestamp("ts", fmt) == 2700))
-                 .groupBy("meter_id", "night").agg(F.count("*").alias("leak_windows")))
+        leaks = leak_nights(raw)
         leaks.write.mode("overwrite").csv(f"{args.base}/benchmark/{args.out_name}")
     spark.stop()
 
