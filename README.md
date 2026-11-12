@@ -14,9 +14,12 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | --- | --- |
 | `data_generator/` | Creates synthetic 15-minute meter readings with injected anomalies |
 | `docker/`, `Dockerfile` | Builds the Hadoop container (see SETUP.md) |
-| `scripts/` | Container setup, loading the raw zone, starting and resetting Kafka |
-| `hive/` | Hive table definitions |
-| `streaming/` | Replay into Kafka, baseline batch job, streaming detection job |
+| `scripts/` | Container setup, loading the raw zone, starting Kafka and HBase, resetting a run |
+| `hive/` | Hive table definitions (raw zone, cleansed and curated zones) |
+| `batch/` | Batch layer: builds the cleansed, quarantine and curated zones |
+| `hbase/` | Example HBase queries on the serving layer |
+| `common/` | Shared error handling (step names and failure banners) |
+| `streaming/` | Replay into Kafka, baseline batch job, streaming detection job, HBase writer |
 | `evaluation/` | Compares alerts with the injected anomalies |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
@@ -68,7 +71,7 @@ All commands below are typed inside the container, from `/home/hadoop/dewa` (see
 python3 data_generator/generate.py
 ```
 
-A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project dataset: `--meters 10000 --days 30` (about 28.8 million readings, roughly 2 GB).
+A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project dataset: `--meters 10000 --days 30` (about 28.8 million readings, about 2.3 GB). `--days` must be at least 3.
 
 | File | What it is |
 | --- | --- |
@@ -78,12 +81,23 @@ A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project 
 
 Timestamps are Dubai local time. Water is in imperial gallons, electricity in kWh.
 
-### 2. Load the raw zone (HDFS and Hive)
+### 2. Load the raw zone and build the lake zones
 
 ```
 bash scripts/load_raw_zone.sh 2>/dev/null
 hive -f hive/01_raw_zone.sql 2>/dev/null
+spark-submit batch/build_zones.py 2>/dev/null
+hive -f hive/02_lake_zones.sql 2>/dev/null
 ```
+
+| Zone | HDFS folder | What it holds |
+| --- | --- | --- |
+| Raw | `/user/hadoop/dewa/raw` | The CSV files exactly as received |
+| Cleansed | `/user/hadoop/dewa/cleansed/readings` | Typed, validated, deduplicated readings (Parquet, one folder per day) |
+| Quarantine | `/user/hadoop/dewa/quarantine/readings` | Readings that failed validation (bad timestamp, unknown meter, missing value, negative value), with the reason |
+| Curated | `/user/hadoop/dewa/curated` | `dim_meter`, `daily_meter_usage` (one row per meter per day) and `meter_baseline` |
+| Landing | `/user/hadoop/dewa/landing/readings` | Every reading that arrived through the stream (Parquet) |
+| Alerts | `/user/hadoop/dewa/alerts` | Every alert the streaming job raised (Parquet) |
 
 ### 3. Streaming: live leak detection
 
@@ -91,15 +105,16 @@ Day 1 of the data is history: the batch layer builds each meter's normal range f
 
 Use three container terminals (a new terminal tab, then `docker exec -it hadoop bash` and `cd /home/hadoop/dewa`).
 
-**Terminal 1: Kafka, baseline, then the detection job**
+**Terminal 1: Kafka, HBase, baseline, then the detection job**
 
 ```
 bash scripts/start_kafka.sh
+bash scripts/start_hbase.sh
 spark-submit streaming/baseline.py 2>/dev/null
-spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 streaming/detect_stream.py --kafka-alerts 2>/dev/null
+spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 streaming/detect_stream.py --kafka-alerts --hbase 2>/dev/null
 ```
 
-The first run of the last command downloads the Kafka connector for Spark (about a minute). Leave it running: it prints each batch of alerts as it raises them.
+The first run of the last command downloads the Kafka connector for Spark (about a minute). It checks that Kafka, the baseline and HBase are ready, prints `waiting for readings`, then prints each batch of alerts as it raises them. Leave out `--hbase` to run without HBase.
 
 **Terminal 2: replay the readings into Kafka**
 
@@ -119,13 +134,40 @@ When the replay finishes (terminal 2 prints `Replay finished` and returns to the
 
 To run the stream again from scratch: `bash scripts/reset_stream.sh`.
 
-### 4. Evaluate
+### 4. Look at the serving layer (HBase)
+
+Only after the replay has finished and the detection job has stopped: before that the tables are empty.
+
+```
+bash scripts/hbase_queries.sh
+```
+
+(This runs `hbase/queries.hbase` and hides HBase's start-up log lines. To type your own queries, use `hbase shell`.)
+
+Shows the open alerts (one row per meter and alert type), one meter's newest readings, and the history of one alert. The file uses meter W0000108, which has a leak in the default dataset; with other data, change it to a meter from your own alerts.
+
+### 5. Evaluate
 
 ```
 spark-submit evaluation/evaluate.py 2>/dev/null
 ```
 
-Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies.
+Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies. Latency is taken from each anomaly's first alert: the time from the revealing reading's arrival in Kafka to the moment that alert was computed and ready to publish. It can be run again at any time on the alerts already in HDFS.
+
+## If something fails
+
+Every script says which step it is on (`[step] ...`). If anything goes wrong it stops and prints a banner like this, even when the command ends in `2>/dev/null`:
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+FAILED at step: pre-flight: Kafka
+Error: Kafka is not reachable at localhost:9092 ([Errno 111] Connection refused)
+What to do: start it with: bash scripts/start_kafka.sh
+Full details: run the same command again without 2>/dev/null
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
+Shell scripts print `FAILED in <script> at line N: <command>`. `2>/dev/null` only hides Spark's log noise, so for the full error, run the command again without it. Send the banner to the group when asking for help.
 
 ## Detection rules
 
@@ -139,4 +181,4 @@ Thresholds are set at the top of `streaming/detect_stream.py`.
 | stuck | Zero consumption for 6 hours |
 | silent | Fewer than 4 readings in a 1-hour window |
 
-**Latest result** (1,000 meters, 6 live days through Kafka, 30 injected anomalies): all 30 detected, no false alerts, alerts 0.5 to 4.5 seconds after the reading arrived. Full figures and caveats are in [RESULTS.md](RESULTS.md).
+**Latest result** (run 3: 1,000 meters, 6 live days through Kafka, 30 injected anomalies, HBase on): all 30 detected, no false alerts, alerts a few seconds after the revealing reading arrived. The latency figures are being re-measured with the corrected method (see RESULTS.md). Full figures and caveats are in [RESULTS.md](RESULTS.md).

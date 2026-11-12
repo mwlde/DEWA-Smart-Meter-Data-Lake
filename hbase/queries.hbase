@@ -1,0 +1,20 @@
+#example hbase queries on the serving layer.
+#run after a streaming run with --hbase has finished (the tables are empty before the replay).
+#run inside the container:  bash scripts/hbase_queries.sh   (hides hbase's log lines)
+#meter W0000108 has a leak in the default dataset (seed 42); use any meter id from your own alerts.
+
+list
+
+#how many open problems, one row per meter and alert type
+count 'meter_alerts'
+
+#the open alerts
+scan 'meter_alerts', {COLUMNS => ['a:area', 'a:window_start', 'a:detail'], LIMIT => 10}
+
+#one meter's 4 newest readings (the reversed timestamp in the row key puts the newest first)
+scan 'meter_readings', {ROWPREFIXFILTER => 'W0000108#', LIMIT => 4}
+
+#the history of one alert: each repeat is kept as a version
+get 'meter_alerts', 'W0000108#leak', {COLUMN => 'a:window_start', VERSIONS => 10}
+
+exit

@@ -14,34 +14,59 @@ Spark Structured Streaming:
   stuck     no consumption at all for 6 hours (meter stopped recording)
   silent    readings missing: fewer than 4 readings in a 1-hour window
 
-Every alert is written to the data lake (alerts zone, Parquet) and, with
---kafka-alerts, to the Kafka topic "alerts" for an operations dashboard.
-A copy of every reading is also landed in the lake (landing zone, Parquet).
+Outputs:
+  alerts zone (Parquet)      every alert, for evaluation and reporting
+  Kafka topic "alerts"       with --kafka-alerts, for an operations dashboard
+  HBase (serving layer)      with --hbase: every reading in meter_readings
+                             (row key: meter ID + reversed timestamp, newest first)
+                             and the open alerts in meter_alerts (row key: meter ID
+                             + alert type; repeats of the same alert become versions)
+  landing zone (Parquet)     a copy of every reading
+
+Before starting it checks Kafka, the baseline and (with --hbase) HBase, and
+stops with a clear message if one is missing. It stops by itself 30 seconds
+after the readings stop arriving.
 
 Run inside the container, from /home/hadoop/dewa (see README for the full steps):
     spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 \
-        streaming/detect_stream.py --kafka-alerts
+        streaming/detect_stream.py --kafka-alerts --hbase
 
 Test without Kafka (reads CSV files written by replay.py --to-dir):
     spark-submit streaming/detect_stream.py --source files --input /tmp/stream_in --once
 """
 
 import argparse
+import os
+import socket
+import sys
+import threading
+import time
 
-from pyspark.sql import SparkSession, functions as F
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  #repo root
+
+from pyspark.sql import SparkSession, functions as F  #noqa: E402
+
+from common.errors import banner, fail, run, step  #noqa: E402
+import hbase_rest  #noqa: E402
 
 READING_DDL = ("meter_id STRING, meter_type STRING, premise_id STRING, area STRING, ts STRING, "
                "interval_value DOUBLE, unit STRING, cumulative_value DOUBLE, signal_quality INT")
 
-# Detection thresholds (state these in the report)
-LEAK_MIN_FLOW = 0.5          # gallons per 15 minutes, every reading in the window
-NIGHT_HOURS = (1, 3)         # readings from 01:00 to 03:45
-SPIKE_FACTOR = 4.0           # times the meter's 99th percentile (3.0 gave false alerts on busy days)
+#detection thresholds (state these in the report)
+LEAK_MIN_FLOW = 0.5          #gallons per 15 mins, every reading in the window
+NIGHT_HOURS = (1, 3)         #readings from 01:00 to 03:45
+SPIKE_FACTOR = 4.0           #times the meter's 99th percentile (3.0 gave false alerts on busy days)
 STUCK_HOURS = 6
-WATERMARK = "15 minutes"     # how late a reading may arrive (event time)
+WATERMARK = "15 minutes"     #how late a reading may arrive (event time)
 
 ALERT_COLUMNS = ["alert_type", "meter_id", "meter_type", "area", "window_start", "window_end",
                  "value", "detail", "last_ingest_ts", "alert_ts"]
+#emitted_ts: when the micro-batch had finished computing the alert, just before it is written
+#out. alert_ts is when that micro-batch started. latency = emitted_ts - last_ingest_ts
+OUTPUT_COLUMNS = ALERT_COLUMNS + ["emitted_ts"]
+
+#queries run in parallel threads: the lock stops their console output from interleaving
+PRINT_LOCK = threading.Lock()
 
 
 def parse_args():
@@ -54,6 +79,8 @@ def parse_args():
     p.add_argument("--stream-start", default="2026-07-02 00:00:00",
                    help="first timestamp of the live stream (silent check ignores windows before it)")
     p.add_argument("--kafka-alerts", action="store_true", help="also publish alerts to the Kafka topic 'alerts'")
+    p.add_argument("--hbase", action="store_true", help="also write readings and alerts to HBase")
+    p.add_argument("--hbase-url", default="http://localhost:8080", help="HBase REST server")
     p.add_argument("--trigger", default="2 seconds", help="micro-batch interval")
     p.add_argument("--once", action="store_true", help="process what is available, then stop (testing)")
     p.add_argument("--idle-stop", type=int, default=30,
@@ -61,6 +88,44 @@ def parse_args():
     p.add_argument("--quiet", action="store_true", help="do not print alerts to the console")
     return p.parse_args()
 
+
+#---------------------------------------------------------------------- checks
+
+def preflight(spark, args):
+    """Stop early, with a clear message, if something the job needs is missing."""
+    if args.source == "kafka" or args.kafka_alerts:
+        host, port = args.bootstrap.split(":")
+        try:
+            socket.create_connection((host, int(port)), timeout=5).close()
+        except OSError as e:
+            fail("pre-flight: Kafka", f"Kafka is not reachable at {args.bootstrap} ({e})",
+                 "start it with: bash scripts/start_kafka.sh")
+    if args.source == "files" and not args.input:
+        fail("pre-flight: input", "--source files needs --input FOLDER")
+
+    baseline_path = f"{args.base}/curated/meter_baseline"
+    try:
+        n, reason = spark.read.parquet(baseline_path).count(), "it is empty"
+    except Exception as e:
+        n, reason = 0, str(e).splitlines()[0][:200]
+    if n == 0:
+        fail("pre-flight: baseline", f"no meter baseline at {baseline_path}: {reason} (the spike check needs it)",
+             "build it with: spark-submit streaming/baseline.py (if HDFS is down: docker restart hadoop)")
+    print(f"  baseline found: {n:,} meters")
+
+    if args.hbase:
+        err = hbase_rest.check(args.hbase_url)
+        if err:
+            fail("pre-flight: HBase", f"HBase REST server not reachable at {args.hbase_url} ({err})",
+                 "start it with: bash scripts/start_hbase.sh")
+        for table in ("meter_readings", "meter_alerts"):
+            if not hbase_rest.table_exists(args.hbase_url, table):
+                fail("pre-flight: HBase", f"HBase table '{table}' does not exist",
+                     "create it with: bash scripts/start_hbase.sh")
+        print("  HBase REST server and tables found")
+
+
+#---------------------------------------------------------------------- stream
 
 def read_stream(spark, args):
     if args.source == "kafka":
@@ -74,7 +139,7 @@ def read_stream(spark, args):
                   .select("r.*", "ingest_ts"))
     else:
         parsed = (spark.readStream.schema(READING_DDL)
-                  .option("maxFilesPerTrigger", 4)          # one simulated hour per micro-batch
+                  .option("maxFilesPerTrigger", 4)          #one simulated hr per micro-batch
                   .csv(args.input)
                   .withColumn("ingest_ts", F.current_timestamp()))
 
@@ -97,7 +162,7 @@ def build_checks(spark, readings, args):
     checks = {}
     keys = ["meter_id", "meter_type", "area"]
 
-    # Leak: minimum night flow on water meters
+    #leak: minimum night flow on water meters
     night = readings.where((F.col("meter_type") == "water") &
                            F.hour("event_ts").between(*NIGHT_HOURS))
     leak = (night.groupBy(F.window("event_ts", "1 hour", "15 minutes"), *keys)
@@ -107,21 +172,23 @@ def build_checks(spark, readings, args):
     checks["leak"] = window_alert(leak, "leak", "min_flow",
                                   f"night flow above {LEAK_MIN_FLOW} IG in every reading for 1 hour")
 
-    # Stuck: no consumption for STUCK_HOURS
+    #stuck: no consumption for STUCK_HOURS
     stuck = (readings.groupBy(F.window("event_ts", f"{STUCK_HOURS} hours", "1 hour"), *keys)
              .agg(F.count("*").alias("n"), F.max("interval_value").alias("max_value"),
                   F.max("ingest_ts").alias("last_ingest_ts"))
              .where((F.col("n") >= STUCK_HOURS * 4 - 4) & (F.col("max_value") == 0)))
     checks["stuck"] = window_alert(stuck, "stuck", "max_value", f"zero consumption for {STUCK_HOURS} hours")
 
-    # Silent: readings missing (only windows that start inside the live stream)
+    #silent: readings missing (only windows that start inside the live stream).
+    #a fully silent hr has no rows at all, so it is the partial windows at the start
+    #and end of an outage (1 to 3 readings) that raise the alert
     silent = (readings.groupBy(F.window("event_ts", "1 hour", "15 minutes"), *keys)
               .agg(F.count("*").alias("n"), F.max("ingest_ts").alias("last_ingest_ts"))
               .where((F.col("n") < 4) &
                      (F.col("window.start") >= F.to_timestamp(F.lit(args.stream_start)))))
     checks["silent"] = window_alert(silent, "silent", "n", "fewer than 4 readings in 1 hour")
 
-    # Negative and spike: checked reading by reading, no window needed
+    #negative and spike: checked reading by reading, no window needed
     def point_alert(df, alert_type, detail):
         return df.select(F.lit(alert_type).alias("alert_type"), *keys,
                          F.col("event_ts").alias("window_start"), F.col("event_ts").alias("window_end"),
@@ -129,88 +196,89 @@ def build_checks(spark, readings, args):
                          F.col("ingest_ts").alias("last_ingest_ts"), F.current_timestamp().alias("alert_ts"))
 
     negative = point_alert(readings.where(F.col("interval_value") < 0), "negative", F.lit("negative reading"))
-
-    baseline_path = f"{args.base}/curated/meter_baseline"
-    try:
-        baseline = spark.read.parquet(baseline_path).select("meter_id", "p99_value")
-        spikes = (readings.join(F.broadcast(baseline), "meter_id")   # stream-static join
-                  .where((F.col("p99_value") > 0) &
-                         (F.col("interval_value") > SPIKE_FACTOR * F.col("p99_value"))))
-        spike = point_alert(spikes, "spike",
-                            F.concat(F.lit("reading above 4 x normal maximum ("),
-                                     F.round("p99_value", 2).cast("string"), F.lit(")")))
-        checks["point"] = negative.unionByName(spike)
-    except Exception:
-        print(f"WARNING: no baseline at {baseline_path}; spike check off. Run streaming/baseline.py first.")
-        checks["point"] = negative
-
+    baseline = spark.read.parquet(f"{args.base}/curated/meter_baseline").select("meter_id", "p99_value")
+    spikes = (readings.join(F.broadcast(baseline), "meter_id")   #stream-static join
+              .where((F.col("p99_value") > 0) &
+                     (F.col("interval_value") > SPIKE_FACTOR * F.col("p99_value"))))
+    spike = point_alert(spikes, "spike",
+                        F.concat(F.lit(f"reading above {SPIKE_FACTOR:g} x normal maximum ("),
+                                 F.round("p99_value", 2).cast("string"), F.lit(")")))
+    checks["point"] = negative.unionByName(spike)
     return checks
 
 
-def make_sink(args, name):
-    # One folder per query: queries run in parallel, and two jobs appending to the
-    # same folder at once clash over its _temporary files. Reading {base}/alerts
-    # still returns every alert (source and alert_type come from the folder names).
+#---------------------------------------------------------------------- sinks
+
+def alert_sink(args, name):
+    #one folder per query: queries run in parallel, and two jobs appending to the
+    #same folder at once clash over its _temporary files. reading {base}/alerts
+    #still returns every alert (source and alert_type come from the folder names)
     alerts_path = f"{args.base}/alerts/source={name}"
 
     def emit(batch, batch_id):
         batch = batch.select(*ALERT_COLUMNS).persist()
-        n = batch.count()
-        if n:
-            batch.write.mode("append").partitionBy("alert_type").parquet(alerts_path)
-            if args.kafka_alerts:
-                (batch.select(F.col("meter_id").alias("key"),
-                              F.to_json(F.struct(*ALERT_COLUMNS)).alias("value"))
-                 .write.format("kafka")
-                 .option("kafka.bootstrap.servers", args.bootstrap)
-                 .option("topic", "alerts").save())
-            if not args.quiet:
-                print(f"\n[{name}] batch {batch_id}: {n} alert(s)")
-                batch.orderBy("window_start", "meter_id").show(10, truncate=False)
-        batch.unpersist()
+        try:
+            n = batch.count()   #runs the micro-batch's computation
+            if n:
+                out = batch.withColumn("emitted_ts", F.lit(time.time()).cast("timestamp")).persist()
+                out.write.mode("append").partitionBy("alert_type").parquet(alerts_path)
+                if args.kafka_alerts:
+                    (out.select(F.col("meter_id").alias("key"),
+                                F.to_json(F.struct(*OUTPUT_COLUMNS)).alias("value"))
+                     .write.format("kafka")
+                     .option("kafka.bootstrap.servers", args.bootstrap)
+                     .option("topic", "alerts").save())
+                if args.hbase:
+                    hbase_rest.put_rows(args.hbase_url, "meter_alerts", [
+                        (f"{r.meter_id}#{r.alert_type}",
+                         {"a:meter_type": r.meter_type, "a:area": r.area,
+                          "a:window_start": r.window_start, "a:window_end": r.window_end,
+                          "a:value": r.value, "a:detail": r.detail, "a:alert_ts": r.alert_ts})
+                        for r in out.collect()])
+                if not args.quiet:
+                    with PRINT_LOCK:
+                        print(f"\n[{name}] batch {batch_id}: {n} alert(s)")
+                        out.select(*ALERT_COLUMNS).orderBy("window_start", "meter_id").show(10, truncate=False)
+                out.unpersist()
+        except Exception as e:
+            banner(f"streaming: writing '{name}' alerts (batch {batch_id})", str(e).splitlines()[0][:500],
+                   "check that HDFS, Kafka and HBase are all running (jps), then reset and rerun")
+            raise
+        finally:
+            batch.unpersist()
 
     return emit
 
 
-def main():
-    args = parse_args()
-    spark = (SparkSession.builder.appName("dewa-anomaly-detection")
-             .config("spark.sql.session.timeZone", "UTC")      # timestamps are Dubai local time as written
-             .config("spark.sql.shuffle.partitions", "4")      # small single-machine setup
-             .getOrCreate())
-    spark.sparkContext.setLogLevel("WARN")
+def hbase_readings_sink(args):
+    """Every reading into HBase: row key = meter ID + reversed timestamp, so a
+    prefix scan on a meter returns its newest readings first."""
+    def emit(batch, batch_id):
+        try:
+            rows = (batch.select(
+                        F.concat("meter_id", F.lit("#"),
+                                 F.lpad((F.lit(9999999999) - F.unix_timestamp("event_ts")).cast("string"), 10, "0"))
+                        .alias("rk"),
+                        F.date_format("event_ts", "yyyy-MM-dd HH:mm:ss").alias("ts"),
+                        "interval_value", "unit", "cumulative_value", "meter_type", "area")
+                    .collect())
+            hbase_rest.put_rows(args.hbase_url, "meter_readings",
+                                [(r.rk, {"r:ts": r.ts, "r:value": r.interval_value, "r:unit": r.unit,
+                                         "r:cumulative": r.cumulative_value, "r:meter_type": r.meter_type,
+                                         "r:area": r.area}) for r in rows])
+        except Exception as e:
+            banner(f"streaming: writing readings to HBase (batch {batch_id})", str(e).splitlines()[0][:500],
+                   "check HBase is running: jps should list HMaster and RESTServer (bash scripts/start_hbase.sh)")
+            raise
 
-    readings = read_stream(spark, args)
-    checks = build_checks(spark, readings, args)
-    trigger = {"availableNow": True} if args.once else {"processingTime": args.trigger}
+    return emit
 
-    queries = []
-    # Land every reading in the lake
-    queries.append(readings.drop("ts").writeStream
-                   .format("parquet").partitionBy("dt")
-                   .option("path", f"{args.base}/landing/readings")
-                   .option("checkpointLocation", f"{args.base}/checkpoints/landing")
-                   .outputMode("append").trigger(**trigger).queryName("landing").start())
 
-    for name, df in checks.items():
-        queries.append(df.writeStream
-                       .foreachBatch(make_sink(args, name))
-                       .option("checkpointLocation", f"{args.base}/checkpoints/{name}")
-                       .outputMode("append").trigger(**trigger).queryName(name).start())
-
-    print(f"Started {len(queries)} streaming queries: " + ", ".join(q.name for q in queries))
-    if args.once:
-        for q in queries:
-            q.awaitTermination()
-        print("All available data processed.")
-    else:
-        wait_until_idle(spark, queries, args.idle_stop)
-
+#---------------------------------------------------------------------- main
 
 def wait_until_idle(spark, queries, idle_stop):
     """Run until no new readings have arrived for idle_stop seconds (after the
     first readings), then stop every query cleanly. idle_stop 0 = run forever."""
-    import time
     seen_data, last_data = False, time.time()
     while not spark.streams.awaitAnyTermination(5):
         if idle_stop <= 0:
@@ -223,8 +291,52 @@ def wait_until_idle(spark, queries, idle_stop):
     for q in queries:
         q.stop()
     print("All queries stopped.")
+
+
+def main():
+    args = parse_args()
+    with step("starting Spark"):
+        spark = (SparkSession.builder.appName("dewa-anomaly-detection")
+                 .config("spark.sql.session.timeZone", "UTC")      #timestamps are Dubai local time as written
+                 .config("spark.sql.shuffle.partitions", "4")      #small single-machine setup
+                 .getOrCreate())
+        spark.sparkContext.setLogLevel("WARN")
+
+    with step("pre-flight checks"):
+        preflight(spark, args)
+
+    with step("building the detection queries"):
+        readings = read_stream(spark, args)
+        checks = build_checks(spark, readings, args)
+        trigger = {"availableNow": True} if args.once else {"processingTime": args.trigger}
+
+    with step("starting the streaming queries"):
+        queries = [readings.drop("ts").writeStream
+                   .format("parquet").partitionBy("dt")
+                   .option("path", f"{args.base}/landing/readings")
+                   .option("checkpointLocation", f"{args.base}/checkpoints/landing")
+                   .outputMode("append").trigger(**trigger).queryName("landing").start()]
+        if args.hbase:
+            queries.append(readings.writeStream.foreachBatch(hbase_readings_sink(args))
+                           .option("checkpointLocation", f"{args.base}/checkpoints/hbase_readings")
+                           .outputMode("append").trigger(**trigger).queryName("hbase_readings").start())
+        for name, df in checks.items():
+            queries.append(df.writeStream
+                           .foreachBatch(alert_sink(args, name))
+                           .option("checkpointLocation", f"{args.base}/checkpoints/{name}")
+                           .outputMode("append").trigger(**trigger).queryName(name).start())
+        print(f"  started {len(queries)} queries: " + ", ".join(q.name for q in queries))
+        print("  waiting for readings (start the replay in another terminal)")
+
+    with step("streaming"):
+        if args.once:
+            for q in queries:
+                q.awaitTermination()
+            print("All available data processed.")
+        else:
+            wait_until_idle(spark, queries, args.idle_stop)
     spark.stop()
 
 
 if __name__ == "__main__":
-    main()
+    run(main)

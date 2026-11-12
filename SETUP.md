@@ -1,10 +1,10 @@
 # Setup: Mac and Windows
 
-Disclaimer, since i do everything on a mac everything runs inside a Docker container. Hadoop (HDFS and YARN), Hive, Spark, Kafka and HBase on Ubuntu with Java 8. Your own computer only needs Docker and Git. The repo folder is linked into the container, so files you change on your computer appear inside it straight away.
+Disclaimer, since i do everything on a mac everything runs inside a Docker container: Hadoop (HDFS and YARN), Hive, Spark, Kafka and HBase on Ubuntu with Java 8. Your own computer only needs Docker and Git. The repo folder is linked into the container, so files you change on your computer appear inside it straight away.
 
 The setup takes about 30 to 60 minutes once, mostly downloads. After that, starting work takes three commands.
 
-> **Status:** the `Dockerfile` route below has not been test-built yet (see `TODO.md`). since again i use an equivalent image built earlier in the semester on a mac. If a step fails, send the error to the group.
+> **Status:** the `Dockerfile` route below has not been test-built yet (see `TODO.md`), since again i use an equivalent image built earlier in the semester on a mac. If a step fails, send the error to the group.
 
 ## What you need
 

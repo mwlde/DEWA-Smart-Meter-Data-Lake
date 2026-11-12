@@ -9,12 +9,18 @@ table to spot spikes: a reading far above what that meter normally does.
 This is the batch layer feeding the speed layer (Lambda architecture).
 
 Run inside the container, from /home/hadoop/dewa:
-    spark-submit streaming/baseline.py
+    spark-submit streaming/baseline.py 2>/dev/null
 """
 
 import argparse
+import os
+import sys
 
-from pyspark.sql import SparkSession, functions as F
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  #repo root
+
+from pyspark.sql import SparkSession, functions as F  #noqa: E402
+
+from common.errors import fail, run, step  #noqa: E402
 
 READING_SCHEMA = ("meter_id STRING, meter_type STRING, premise_id STRING, area STRING, ts STRING, "
                   "interval_value DOUBLE, unit STRING, cumulative_value DOUBLE, signal_quality INT")
@@ -26,29 +32,42 @@ def main():
     p.add_argument("--history-days", type=int, default=1)
     args = p.parse_args()
 
-    spark = SparkSession.builder.appName("dewa-baseline").getOrCreate()
-    spark.sparkContext.setLogLevel("WARN")
+    with step("starting Spark"):
+        spark = SparkSession.builder.appName("dewa-baseline").getOrCreate()
+        spark.sparkContext.setLogLevel("WARN")
 
-    raw = (spark.read.option("header", True).schema(READING_SCHEMA)
-           .csv(f"{args.base}/raw/readings"))  #dt column comes from the dt=... folders
-    days = sorted(r.dt for r in raw.select(F.col("dt").cast("string").alias("dt")).distinct().collect())
-    history = days[: args.history_days]
-    print(f"History used for the baseline: {', '.join(history)}")
+    with step("reading the raw zone"):
+        try:
+            raw = (spark.read.option("header", True).schema(READING_SCHEMA)
+                   .csv(f"{args.base}/raw/readings"))  #dt column comes from the dt=... folders
+            days = sorted(r.dt for r in raw.select(F.col("dt").cast("string").alias("dt")).distinct().collect())
+        except Exception as e:
+            fail("reading the raw zone", f"cannot read {args.base}/raw/readings ({str(e).splitlines()[0][:200]})",
+                 "load it with: bash scripts/load_raw_zone.sh")
+        if not days:
+            fail("reading the raw zone", f"{args.base}/raw/readings has no dt=... day folders",
+                 "load it with: bash scripts/load_raw_zone.sh")
+        history = days[: args.history_days]
+        print(f"  history used for the baseline: {', '.join(history)}")
 
-    baseline = (raw.where(F.col("dt").cast("string").isin(history) & (F.col("interval_value") >= 0))
-                .groupBy("meter_id", "meter_type")
-                .agg(F.percentile_approx("interval_value", 0.99).alias("p99_value"),
-                     F.avg("interval_value").alias("avg_value"),
-                     F.count("*").alias("readings")))
+    with step("computing each meter's normal range"):
+        baseline = (raw.where(F.col("dt").cast("string").isin(history) & (F.col("interval_value") >= 0))
+                    .groupBy("meter_id", "meter_type")
+                    .agg(F.percentile_approx("interval_value", 0.99).alias("p99_value"),
+                         F.avg("interval_value").alias("avg_value"),
+                         F.count("*").alias("readings")))
+        out = f"{args.base}/curated/meter_baseline"
+        baseline.write.mode("overwrite").parquet(out)
 
-    out = f"{args.base}/curated/meter_baseline"
-    baseline.write.mode("overwrite").parquet(out)
-
-    saved = spark.read.parquet(out)
-    print(f"Baseline saved to {out}: {saved.count():,} meters")
-    saved.orderBy("meter_id").show(5, truncate=False)
+    with step("checking the saved baseline"):
+        saved = spark.read.parquet(out)
+        n = saved.count()
+        if n == 0:
+            fail("checking the saved baseline", "the baseline is empty", "check the raw zone has readings")
+        print(f"Baseline saved to {out}: {n:,} meters")
+        saved.orderBy("meter_id").show(5, truncate=False)
     spark.stop()
 
 
 if __name__ == "__main__":
-    main()
+    run(main)

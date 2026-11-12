@@ -1,5 +1,5 @@
 """
-Synthetic DEWA smart meter readings for the ISIT312 project.
+Synthetic DEWA smart meter readings since we dont have access to the real data :(
 
 Generates 15-minute interval readings for a set of water and electricity
 meters, injects anomalies at known times, and writes a ground-truth file so
@@ -28,10 +28,6 @@ import os
 import random
 from datetime import datetime, timedelta
 
-#---------------------------------------------------------------------------
-#assumptions. these are placeholders: calibrate them against the dewa
-#annual statistics on dubai pulse and state the final values in the report.
-#---------------------------------------------------------------------------
 
 #average daily consumption per premise type
 DAILY_WATER_IG = {"apartment": 100, "villa": 400, "commercial": 600}
@@ -122,7 +118,8 @@ def plan_anomalies(meters, start, days, rate, rng):
             length, extra = 1, rng.uniform(10, 30)
         plans[m["meter_id"]] = {
             "kind": kind, "start_idx": start_idx,
-            "end_idx": start_idx + length - 1, "extra": extra,
+            #stuck and silent spells can run past the last day: end the ground truth there
+            "end_idx": min(start_idx + length - 1, total_intervals - 1), "extra": extra,
         }
     return plans
 
@@ -140,6 +137,8 @@ def main():
     p.add_argument("--anomaly-rate", type=float, default=0.03, help="share of meters with an anomaly")
     p.add_argument("--out", default="data")
     args = p.parse_args()
+    if args.days < 3:
+        p.error("--days must be at least 3 (day 1 is history, anomalies start on day 2 and end before the last day)")
 
     rng = random.Random(args.seed)
     start = datetime.strptime(args.start, "%Y-%m-%d")

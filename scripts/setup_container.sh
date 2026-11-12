@@ -4,13 +4,15 @@
 #
 #before running this, install java 8 as root. in the mac terminal:
 #  docker exec -u root hadoop bash -c "apt-get update && apt-get install -y openjdk-8-jdk-headless curl python3"
+#(not needed with the Dockerfile image from SETUP.md: it already has java 8)
 #
 #then inside the container (as user hadoop):
 #  bash /home/hadoop/dewa/scripts/setup_container.sh
 #
 #safe to run again: anything already installed is skipped.
 #if the container is ever lost, recreate it and run both steps again.
-set -e
+set -eE
+trap 'echo; echo "FAILED in setup_container.sh at line $LINENO: $BASH_COMMAND"' ERR
 
 #versions (change here if a download is not found)
 HIVE_VERSION=3.1.3
@@ -131,7 +133,8 @@ fi
 
 #---------------------------------------------------------------- hbase config
 say "Configuring HBase (standalone mode)"
-echo "export JAVA_HOME=$J8" >> $HBASE_HOME/conf/hbase-env.sh
+#added once only (re-runs used to append the same line again each time)
+grep -q "^export JAVA_HOME=$J8" $HBASE_HOME/conf/hbase-env.sh || echo "export JAVA_HOME=$J8" >> $HBASE_HOME/conf/hbase-env.sh
 cat > $HBASE_HOME/conf/hbase-site.xml <<'EOF'
 <?xml version="1.0"?>
 <configuration>
