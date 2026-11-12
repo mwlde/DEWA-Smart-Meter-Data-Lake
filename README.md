@@ -21,6 +21,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | `common/` | Shared error handling (step names and failure banners) |
 | `streaming/` | Replay into Kafka, baseline batch job, streaming detection job, HBase writer |
 | `evaluation/` | Compares alerts with the injected anomalies |
+| `benchmark/` | The same leak check in MapReduce, Hive and Spark batch, and the comparison script |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
 | `logs/` | Output of the detection job from `run_stream.sh` (not committed) |
@@ -33,13 +34,13 @@ DEWA does not publish its 15-minute meter readings, so the project generates rea
 
 **Consumption.** Every meter reports once every 15 minutes (96 readings a day), the interval DEWA reports for its smart meters. Each reading is built from:
 
-1. **A daily average for the premise type:**
+1. **A daily average for the premise type**, calibrated to DEWA's Annual Statistics Booklet 2025 (see "Calibration" below):
 
    | Premise | Water (imperial gallons a day) | Electricity (kWh a day) |
    | --- | --- | --- |
-   | Apartment | 100 | 25 |
-   | Villa | 400 | 120 |
-   | Commercial | 600 | 200 |
+   | Apartment | 135 | 32 |
+   | Villa | 540 | 155 |
+   | Commercial | 700 | 440 |
 
 2. **A per-premise factor** between 0.6 and 1.5, so no two homes use exactly the same amount.
 3. **A daily profile** spreading the day's use over the 96 intervals. Homes have morning (06:00 to 08:00) and evening (18:00 to 20:00) water peaks and almost no use between midnight and 05:00; their electricity rises through the afternoon. Commercial premises follow office hours (08:00 to 17:00).
@@ -60,7 +61,20 @@ Each reading also carries a running total (`cumulative_value`, the meter registe
 
 Every anomaly is written to `data/ground_truth.csv` with its meter and start and end time. The evaluation script compares the pipeline's alerts against this file, which is how detection rate and detection time are measured exactly.
 
-**Assumptions.** The daily averages, profiles and seasonal factors are our own estimates. They are to be calibrated against DEWA's annual statistics on Dubai Pulse (see TODO.md), and the report states them as assumptions.
+**Calibration.** The daily averages are set so that, averaged over a year, each kind of account uses what DEWA's [Annual Statistics Booklet 2025](https://dewa.gov.ae/-/media/Files/About-DEWA/Annual-Statistics/DEWA_Annual_Statistics_Booklet_2025_EN.ashx) reports (2025 consumption by category, divided by the number of customers in that category and by 365):
+
+| Per account, per day | DEWA 2025 | Generator (checked over a sample of every month) |
+| --- | --- | --- |
+| Home, water | 258 gallons | 252 gallons |
+| Commercial, water | 708 gallons | 707 gallons |
+| Home, electricity | 52.6 kWh | 55.1 kWh |
+| Commercial, electricity | 336 kWh | 343 kWh |
+
+Our share of commercial premises (15%) is close to DEWA's (14% of water customers, 19% of electricity customers).
+
+**Assumptions.** DEWA does not split homes into apartments and villas, so the 70/30 apartment and villa mix and the size difference between them (a villa uses 4 times the water and 4.8 times the electricity of an apartment) are our own estimates, as are the daily profiles and seasonal factors. The report states them as assumptions.
+
+**Units.** Water is in imperial gallons, the unit of DEWA's annual statistics. DEWA has billed water in cubic metres since March 2025 (1 cubic metre = 219.97 imperial gallons).
 
 ## Running the pipeline
 
@@ -152,6 +166,40 @@ spark-submit evaluation/evaluate.py 2>/dev/null
 
 Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies. Latency is taken from each anomaly's first alert: the time from the revealing reading's arrival in Kafka to the moment that alert was computed and ready to publish. It can be run again at any time on the alerts already in HDFS.
 
+### 6. Benchmark: why some tools fit and others do not
+
+```
+bash scripts/run_benchmark.sh
+```
+
+Runs the same night-flow leak rule on the raw zone with each tool below, 3 times each, and times the whole command each time (what a user waits for, start-up included). Spark batch runs twice: in local mode, and on YARN like MapReduce and Hive:
+
+| Version | File |
+| --- | --- |
+| MapReduce (Hadoop Streaming, Python mapper and reducer) | `benchmark/leak_mapper.py`, `benchmark/leak_reducer.py` |
+| Hive (HiveQL with window functions, run as MapReduce jobs) | `benchmark/leak_check.hql` |
+| Spark batch (DataFrame window functions) | `benchmark/spark_batch.py` |
+
+It then checks that every version found the same leaking meter-nights as the injected leaks, adds the streaming job's alerts and latency from the last `run_stream.sh` run, and prints one table (also saved to `logs/benchmark_results.md`). About 5 to 10 minutes for the 1,000-meter data. If YARN cannot run Spark, that row is skipped and the rest still runs. `bash scripts/run_benchmark.sh 5` does 5 runs of each.
+
+Run it after `run_stream.sh` on the same data, so the streaming row matches.
+
+### 7. Full-size run (final results)
+
+The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.3 GB). The stream takes about 50 minutes; close other apps and give Docker at least 8 GB of memory.
+
+```
+python3 data_generator/generate.py --meters 10000 --days 30
+bash scripts/load_raw_zone.sh 2>/dev/null
+hive -f hive/01_raw_zone.sql 2>/dev/null
+spark-submit --driver-memory 2g batch/build_zones.py 2>/dev/null
+hive -f hive/02_lake_zones.sql 2>/dev/null
+bash scripts/run_stream.sh --no-hbase
+bash scripts/run_benchmark.sh
+```
+
+`run_stream.sh` rebuilds the baseline by itself when the raw zone is newer than it. The full-size stream runs without HBase: HBase was shown in runs 3 and 4, and writing 10,000 readings a second through its REST server from one machine would measure that bottleneck rather than the pipeline. To go back to the small dataset, run the same steps with `python3 data_generator/generate.py` (no options).
+
 ## If something fails
 
 Every script says which step it is on (`[step] ...`). If anything goes wrong it stops and prints a banner like this, even when the command ends in `2>/dev/null`:
@@ -179,4 +227,4 @@ Thresholds are set at the top of `streaming/detect_stream.py`.
 | stuck | Zero consumption for 6 hours |
 | silent | Fewer than 4 readings in a 1-hour window |
 
-**Latest result** (run 3: 1,000 meters, 6 live days through Kafka, 30 injected anomalies, HBase on): all 30 detected, no false alerts, alerts a few seconds after the revealing reading arrived. The latency figures are being re-measured with the corrected method (see RESULTS.md). Full figures and caveats are in [RESULTS.md](RESULTS.md).
+**Latest result** (run 4: 1,000 meters, 6 live days through Kafka, 30 injected anomalies, HBase on): all 30 detected, no false alerts. Each anomaly's first alert was ready about 1 to 2 seconds after the revealing reading arrived for single-reading checks (spike, negative), and about 6 seconds for window checks (leak, silent, stuck). Full figures and caveats are in [RESULTS.md](RESULTS.md).

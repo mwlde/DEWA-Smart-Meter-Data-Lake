@@ -19,7 +19,8 @@ Output (in --out, default ./data):
     ground_truth.csv                        every injected anomaly
 
 All timestamps are Dubai local time (Gulf Standard Time, UTC+4).
-Water is in imperial gallons (DEWA's unit), electricity in kWh.
+Water is in imperial gallons, the unit of DEWA's annual statistics (DEWA bills
+in cubic metres since March 2025; 1 m3 = 219.9692 IG). Electricity is in kWh.
 """
 
 import argparse
@@ -29,9 +30,18 @@ import random
 from datetime import datetime, timedelta
 
 
-#average daily consumption per premise type
-DAILY_WATER_IG = {"apartment": 100, "villa": 400, "commercial": 600}
-DAILY_ELEC_KWH = {"apartment": 25, "villa": 120, "commercial": 200}
+#average daily consumption per premise type, calibrated to the DEWA annual statistics
+#booklet 2025 (consumption by category / customers by category / 365):
+#  residential water 92,857 MIG / 986,291 = 258 IG per account per day
+#  commercial water 42,548 MIG / 164,683 = 708 IG per account per day
+#  residential electricity 19,252 GWh / 1,003,334 = 52.6 kWh per account per day
+#  commercial electricity 30,050 GWh / 244,973 = 336 kWh per account per day
+#the values below give those yearly averages once the per-premise factor (avg 1.05)
+#and the seasonal factors (avg 0.967 water, 0.733 electricity) are applied.
+#dewa does not split homes into apartments and villas: the 60/25 mix and the villa to
+#apartment ratio (4x water, 4.8x electricity) are our own assumptions
+DAILY_WATER_IG = {"apartment": 135, "villa": 540, "commercial": 700}
+DAILY_ELEC_KWH = {"apartment": 32, "villa": 155, "commercial": 440}
 
 PREMISE_MIX = [("apartment", 0.60), ("villa", 0.25), ("commercial", 0.15)]
 

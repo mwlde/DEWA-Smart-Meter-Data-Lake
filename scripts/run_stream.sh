@@ -30,9 +30,13 @@ else
 fi
 
 say "3/6 checking the baseline"
-if hdfs dfs -test -d /user/hadoop/dewa/curated/meter_baseline 2>/dev/null; then
-  echo "baseline found"
+#rebuild it if it is missing or older than the raw zone (new data needs a new baseline)
+RAW_T=$(hdfs dfs -stat "%Y" /user/hadoop/dewa/raw/readings 2>/dev/null || echo 0)
+BASE_T=$(hdfs dfs -stat "%Y" /user/hadoop/dewa/curated/meter_baseline 2>/dev/null || echo 0)
+if [ "$BASE_T" -gt "$RAW_T" ]; then
+  echo "baseline is up to date"
 else
+  echo "building the baseline from the raw zone"
   spark-submit streaming/baseline.py 2>/dev/null
 fi
 

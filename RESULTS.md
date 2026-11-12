@@ -2,6 +2,57 @@
 
 Every measured result, with the conditions it came from. Report sections 5.5 and 7.1 take their figures from here. Add a new run at the top; keep the old ones. Screenshots are in `screenshots/mac/`.
 
+## Benchmark 1: the leak check in four tools, 1,000 meters (12 November 2026)
+
+`bash scripts/run_benchmark.sh` on the same data as run 4 (1,000 meters, 7 days, 671,792 readings in the raw zone, uncalibrated generator), 3 runs of each tool. Runtime is the wall-clock time of the whole command, start-up included.
+
+| Approach | Runtime (median) | Range | Leak nights found | Correct | Missed | Extra | Time to alert | Lines of code |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MapReduce (Hadoop Streaming, Python) | 15.1 s | 12.4 to 15.2 s | 19 | 19 | 0 | 0 | about 2 h + 15 s | 36 |
+| Hive (HiveQL on MapReduce) | 33.0 s | 32.9 to 34.0 s | 19 | 19 | 0 | 0 | about 2 h + 33 s | 16 |
+| Spark batch (DataFrames, local mode) | 4.2 s | 4.2 to 4.4 s | 19 | 19 | 0 | 0 | about 2 h + 4 s | 36 |
+| Spark Structured Streaming | continuous | - | 19 | 19 | 0 | 0 | 6.5 s | 219 (all 5 checks) |
+
+**What it shows**
+
+- **All four agree exactly**: each found the 19 leaking meter-nights the 8 injected leaks produce, nothing missed, nothing extra. The differences below are about the tools, not about what they compute.
+- **Hive is the slowest** (33 s, about twice MapReduce): it compiles the query into several MapReduce jobs, each started on YARN. It is the shortest to write (16 lines of SQL), which is why it suits reporting rather than alerting.
+- **MapReduce** (15 s) pays one YARN job start-up and writes intermediate results to disk between map and reduce; the rule itself takes 36 lines of hand-written mapper and reducer.
+- **Spark batch** (4.2 s) was fastest, but it ran in local mode, inside the container without YARN, so part of its lead is the missing YARN start-up. The benchmark now also runs Spark on YARN (from benchmark 2 on) for a like-for-like comparison.
+- **Time to alert** is the decisive column for leak detection. A nightly batch can only report a leak after the night window ends (04:00), about 2 hours after the leak first shows (02:00), whatever the tool. Streaming reported it 6.5 seconds after the revealing reading arrived. The tool's runtime (4 to 33 s) hardly matters next to the batch schedule.
+- At 1,000 meters every tool finishes in seconds, so runtime differences are mostly start-up overhead. The full-size run (10,000 meters, 30 days, about 43 times the data) repeats the benchmark to show how each tool scales.
+
+**Screenshot** (in `screenshots/mac/`): `5-5_benchmark_1000_meters.png`.
+
+## Generator calibrated to DEWA's 2025 statistics (12 November 2026)
+
+The generator's daily averages now match DEWA's Annual Statistics Booklet 2025 (details and sources in README, "How the synthetic data is generated"). **Runs 1 to 4 used the earlier, uncalibrated averages**: homes used about 25% too little water and commercial premises about 15% too little; electricity was also lower. Anomalies are unchanged (same meters, same times), because they do not depend on the consumption levels.
+
+Checks after the change:
+
+- **Yearly averages** (a 3-day sample of each month, 2,000 meters, no anomalies): home water 252 gallons a day (DEWA 258), commercial water 707 (708), home electricity 55.1 kWh (52.6), commercial electricity 343 kWh (336). All within 5%.
+- **Detection** (300 meters, 4 days, 61 anomalies, the local test from run 1): 61 of 61 detected, no false alerts.
+- **Night-flow margin** (default 1,000-meter dataset): the highest one-hour minimum night flow of any healthy water meter is 0.055 gallons for apartments, 0.234 for villas and 0.294 for commercial premises, against the 0.5-gallon leak threshold. Healthy meters stay well clear of it.
+
+## Run 4: one-command run with the corrected latency measure (12 November 2026)
+
+Same setup and data as runs 2 and 3, HBase on, started with `bash scripts/run_stream.sh` (first real run of that script). Latency is now measured to when each anomaly's first alert was computed and ready to publish (`emitted_ts`). **These are the figures to quote** for the 1,000-meter dataset (uncalibrated consumption; the full-size run will use the calibrated generator).
+
+| Type | Injected | Detected | Detection | False alerts | Median delay, simulated | Median latency, real |
+| --- | --- | --- | --- | --- | --- | --- |
+| leak | 8 | 8 | 100% | 0 | 735 min | 6.46 s |
+| negative | 4 | 4 | 100% | 0 | 0 min | 2.02 s |
+| silent | 6 | 6 | 100% | 0 | 15 min | 6.50 s |
+| spike | 4 | 4 | 100% | 0 | 0 min | 1.03 s |
+| stuck | 8 | 8 | 100% | 0 | 375 min | 6.02 s |
+| **All** | **30** | **30** | **100%** | **0** | | |
+
+- 348 alerts raised, 136 alert batches printed, the same as runs 2 and 3: the result repeats exactly.
+- Compared with run 3 re-evaluated (first alert, measured to the micro-batch start), every type rose by about 0.2 to 1.7 seconds: the time Spark takes to compute a micro-batch, as predicted in the correction below.
+- Point checks (spike, negative) alert in 1 to 2 seconds; window checks (leak, silent, stuck) in about 6 seconds, because they also wait for their window to close. All are far under the 5-minute requirement (R2).
+
+**Screenshot** (in `screenshots/mac/`): `7-1_evaluation_run4_one_command.png`.
+
 ## Correction to the latency figures (12 November 2026)
 
 The "median latency, real" figures in runs 2 and 3 below are too low, for two reasons found in the mid-project review:
@@ -9,7 +60,7 @@ The "median latency, real" figures in runs 2 and 3 below are too low, for two re
 1. **Fastest alert, not first alert.** `evaluate.py` took the fastest of each anomaly's alerts. A leak raises an alert for every window that shows it, so this picked the quickest repeat and hid slower first alerts. The clearest case: in run 2 the first silent alert took about 26 seconds (Spark was still starting), but the table shows 4.35 s for silent. The script now takes each anomaly's **first** alert.
 2. **Measured to the start of the micro-batch.** `alert_ts` is when the micro-batch that raised the alert started, before Spark had computed it. The streaming job now also records `emitted_ts`, when the alert was computed and ready to publish, and latency is measured to that. In a test here, the gap between the two was about 1.3 to 1.7 seconds per alert.
 
-Reason 2 is fixed from the next streaming run on (old alerts have no `emitted_ts`, so the script falls back to `alert_ts` and says so). Detection rates and false alert counts are not affected.
+Reason 2 is fixed from run 4 on (old alerts have no `emitted_ts`, so the script falls back to `alert_ts` and says so). Detection rates and false alert counts are not affected.
 
 **Run 3 re-evaluated with the first alert per anomaly** (same alerts, latency still to the micro-batch start, so add roughly 1.5 s for the true time to alert):
 
@@ -129,6 +180,8 @@ Silent meters also show in plain Hive: some days have fewer than 48,000 readings
 ## Batch zones and HBase writer: tests (11 and 12 November 2026)
 
 Same 300-meter, 4-day test data as run 1. The container results are in run 3 and in "Batch zones and HBase start-up in the container" above.
+
+**Benchmark test (12 November)**: on calibrated test data (300 meters, 4 days, 17 leaks), the MapReduce mapper and reducer (run through a pipe, as Hadoop Streaming does), the Hive query (run through Spark SQL, which accepts the same HiveQL) and the Spark batch job each found the same 27 leaking meter-nights, exactly the 27 the injected leaks should produce; the streaming job's alerts found the same 27. Timings here are not meaningful: they come from the container run.
 
 **Validation test (12 November)**: 4 bad rows added to the raw data by hand: one with an unreadable timestamp, one from an unknown meter, one with a non-numeric reading, and one duplicate of an existing reading. Result: 115,012 raw, 114,997 cleansed, 14 quarantined (11 negative_value, 1 bad_timestamp, 1 unknown_meter, 1 missing_value), 1 duplicate removed. Every rule caught exactly its own row.
 
