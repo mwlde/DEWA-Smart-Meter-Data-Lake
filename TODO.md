@@ -29,10 +29,14 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [ ] Test-build the `Dockerfile` (on Maria's Mac) and run `SETUP.md` start to finish, so Windows users can follow it
 - [x] Replace `OWNER` in the clone commands in `SETUP.md` with the GitHub account name
 - [x] Calibrate consumption levels in the generator against DEWA's Annual Statistics Booklet 2025 (all four yearly averages within 5%)
-- [ ] Sensitivity test: smaller leaks (0.2 to 1 gallon per 15 minutes) to find where detection starts to fail
+- [x] Sensitivity test built and run here (`evaluation/sensitivity.py`): detection limit about 0.5 gallons per 15 mins at the current threshold
+- [x] Sensitivity test run in the container: identical figures
+- [x] Scale test at 10,000 meters (here): keeps up with the replay; stuck spells under 6 h 45 min can be missed (window alignment), kept as a documented limitation
 - [x] Benchmark in the container on the 1,000-meter data (benchmark 1: all four tools found the same 19 leak nights; Hive 33 s, MapReduce 15 s, Spark local 4.2 s, streaming alert in 6.5 s)
 - [x] Spark on YARN added to the benchmark for a like-for-like comparison (first run with the full-size data)
-- [ ] Full-size run for the final results: `--meters 10000 --days 30`, then the benchmark again at that size (shows how each tool scales)
+- [x] Full-size run (run 5): 10,000 meters, 30 days, 300 of 300 detected, no false alerts; benchmark 2 at that size
+- [x] Benchmark 3, batch tools on 30,000 meters (6.5 GB): all agree; cost per GB measured for each tool
+- [x] Screenshot of the benchmark 3 table (`5-5_benchmark_3x.png`)
 
 ## Evidence for the report
 
@@ -46,10 +50,13 @@ Screenshots go in `screenshots/mac/` (Mac) or `screenshots/other/` (any other se
 - [x] 5.3.3 HBase: open alerts, one meter's newest readings, one alert's history
 - [x] 5.3.4 Zone build summary and Hive partitions for the cleansed and quarantine zones
 - [x] 5.3.4 `hdfs dfs -ls` of all zones, including landing
-- [ ] 5.3.4 Hive: the leak query on `daily_meter_usage` (last query in `hive/02_lake_zones.sql`, cut off in the zones screenshot)
-- [ ] 5.3.3 One clean HBase screenshot with `bash scripts/hbase_queries.sh` (the current ones carry HBase's log lines)
+- [x] 5.3.4 Hive leak query on `daily_meter_usage` (`5-3-4_hive_leak_query_full_size.png`)
+- [x] 5.3.3 Clean HBase screenshots (`5-3-3_hbase_queries_clean_1.png`, `_2.png`)
+- [x] 6 / 7.1 Sensitivity table (`7-1_sensitivity_test.png`)
+- [x] 5.3.4 Zone sizes at full size (`5-3-4_zone_sizes_full_size.png`)
+- [x] 5.3.2 Full-size leak alerts (`5-3-2_full_size_leak_alerts.png`)
 - [ ] 5.3.5 Star schema queries in Hive
 - [x] 5.5 Benchmark table, 1,000 meters (`5-5_benchmark_1000_meters.png`)
-- [ ] 5.5 Benchmark table, full-size data
+- [x] 5.5 Benchmark table, full-size data (`5-5_benchmark_full_size.png`)
 - [x] 7.1 Evaluation table, 1,000-meter run (`7-1_evaluation_results_1000_meters.png`)
-- [ ] 7.1 Evaluation table, full-size run
+- [x] 7.1 Evaluation table, full-size run (`7-1_evaluation_full_size.png`)

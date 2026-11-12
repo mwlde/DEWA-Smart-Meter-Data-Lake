@@ -20,7 +20,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | `hbase/` | Example HBase queries on the serving layer |
 | `common/` | Shared error handling (step names and failure banners) |
 | `streaming/` | Replay into Kafka, baseline batch job, streaming detection job, HBase writer |
-| `evaluation/` | Compares alerts with the injected anomalies |
+| `evaluation/` | Compares alerts with the injected anomalies; sensitivity test for small leaks |
 | `benchmark/` | The same leak check in MapReduce, Hive and Spark batch, and the comparison script |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
@@ -53,7 +53,7 @@ Each reading also carries a running total (`cumulative_value`, the meter registe
 
 | Type | Meters | Share | What is injected |
 | --- | --- | --- | --- |
-| leak | Water | 50% of water anomalies | A constant extra flow of 1 to 6 gallons per 15 minutes (plus or minus 10%), from the start time until the end of the data, as an unrepaired leak would |
+| leak | Water | 50% of water anomalies | A constant extra flow of 1 to 6 gallons per 15 minutes (plus or minus 10%), from the start time until the end of the data, as an unrepaired leak would. `--leak-min` and `--leak-max` change the range (used by the sensitivity test) |
 | spike | Both | 15% water, 30% electricity | One reading of 10 to 30 times the meter's normal peak (a meter glitch) |
 | stuck | Both | 15% water, 30% electricity | Zero consumption for 6 to 48 hours (the meter stops recording) |
 | silent | Both | 10% water, 20% electricity | No readings at all for 2 to 12 hours (communication failure) |
@@ -186,7 +186,7 @@ Run it after `run_stream.sh` on the same data, so the streaming row matches.
 
 ### 7. Full-size run (final results)
 
-The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.3 GB). The stream takes about 50 minutes; close other apps and give Docker at least 8 GB of memory.
+The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.3 GB). Allow about 2 hours in all: the stream takes about 50 minutes and the benchmark 30 to 45. Before starting: close other apps, give Docker at least 8 GB of memory and 4 CPUs (Docker Desktop, Settings, Resources), and stop HBase to free its memory (`hbase-daemon.sh stop rest`, then `stop-hbase.sh`).
 
 ```
 python3 data_generator/generate.py --meters 10000 --days 30
@@ -199,6 +199,26 @@ bash scripts/run_benchmark.sh
 ```
 
 `run_stream.sh` rebuilds the baseline by itself when the raw zone is newer than it. The full-size stream runs without HBase: HBase was shown in runs 3 and 4, and writing 10,000 readings a second through its REST server from one machine would measure that bottleneck rather than the pipeline. To go back to the small dataset, run the same steps with `python3 data_generator/generate.py` (no options).
+
+### 8. Sensitivity test: how small a leak can it catch?
+
+```
+spark-submit evaluation/sensitivity.py 2>/dev/null
+```
+
+Generates six datasets that differ only in leak size (from 0.1 up to the normal 1 to 6 gallons per 15 minutes; 2,000 meters, 7 days, about 156 leaks each), runs the leak rule on each at four alarm thresholds (0.2, 0.3, the pipeline's 0.5, and 1.0), and prints the share of leaks caught and the false alerts. It uses the same rule as `benchmark/spark_batch.py`, which matched the streaming job exactly in both benchmarks. About 3 to 5 minutes; Hadoop is not needed. The table is also saved to `logs/sensitivity_results.md`.
+
+### 9. Bigger batch-only benchmark (optional)
+
+At 2.3 GB, every batch tool's runtime is mostly start-up. To see how the tools compare when there is more work to do, run the benchmark alone on three times the data (30,000 meters, 30 days, about 86 million readings, about 7 GB). The stream is not run on this data, so the streaming row is left out. This replaces the raw zone; the run 5 results in RESULTS.md stay as they are.
+
+```
+python3 data_generator/generate.py --meters 30000 --days 30
+bash scripts/load_raw_zone.sh 2>/dev/null
+bash scripts/run_benchmark.sh --no-streaming
+```
+
+About 45 to 60 minutes in all. Docker needs about 15 GB of free disk (`df -h /` inside the container) and preferably 12 GB of memory. To go back to the run 5 data afterwards, regenerate it with `--meters 10000 --days 30` and reload.
 
 ## If something fails
 
@@ -227,4 +247,4 @@ Thresholds are set at the top of `streaming/detect_stream.py`.
 | stuck | Zero consumption for 6 hours |
 | silent | Fewer than 4 readings in a 1-hour window |
 
-**Latest result** (run 4: 1,000 meters, 6 live days through Kafka, 30 injected anomalies, HBase on): all 30 detected, no false alerts. Each anomaly's first alert was ready about 1 to 2 seconds after the revealing reading arrived for single-reading checks (spike, negative), and about 6 seconds for window checks (leak, silent, stuck). Full figures and caveats are in [RESULTS.md](RESULTS.md).
+**Final result** (run 5: 10,000 meters, 30 days, 28.8 million readings, 300 injected anomalies): all 300 detected, no false alerts. Each anomaly's first alert was ready about 2 seconds after the revealing reading arrived for single-reading checks (spike, negative), and 6 to 7 seconds for window checks (leak, silent, stuck). In the benchmark, every tool found the same 1,370 leak nights; a nightly MapReduce, Hive or Spark batch reports a leak about 2 hours after it shows, the streaming job within 6 seconds. On three times the data (6.5 GB), Spark on YARN was 30% faster than MapReduce and 40% faster than Hive. Full figures and caveats are in [RESULTS.md](RESULTS.md).

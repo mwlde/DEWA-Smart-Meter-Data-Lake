@@ -2,6 +2,143 @@
 
 Every measured result, with the conditions it came from. Report sections 5.5 and 7.1 take their figures from here. Add a new run at the top; keep the old ones. Screenshots are in `screenshots/mac/`.
 
+## Benchmark 3: batch tools on three times the data (12 November 2026)
+
+`bash scripts/run_benchmark.sh --no-streaming` on 30,000 meters for 30 days (86,396,079 readings, 6.5 GB raw CSV, calibrated generator, 868 anomalies of which 237 leaks). Docker had 10 CPUs and 12 GB of memory; Kafka and HBase were not running. The stream was not run on this data, so there is no streaming row.
+
+| Approach | Runtime (median) | Range | Leak nights found | Correct | Missed | Extra | Time to alert | Lines of code |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MapReduce (Hadoop Streaming, Python) | 61.4 s | 60.7 to 62.5 s | 3,366 | 3,366 | 0 | 0 | about 2 h + 61 s | 36 |
+| Hive (HiveQL on MapReduce) | 71.4 s | 71.2 to 75.1 s | 3,366 | 3,366 | 0 | 0 | about 2 h + 71 s | 16 |
+| Spark batch (DataFrames, local mode) | 18.5 s | 17.4 to 20.2 s | 3,366 | 3,366 | 0 | 0 | about 2 h + 19 s | 39 |
+| Spark batch (DataFrames, on YARN) | 42.8 s | 42.3 to 43.6 s | 3,366 | 3,366 | 0 | 0 | about 2 h + 43 s | 39 |
+
+**How the tools scale** (all three benchmarks: 54 MB, 2.2 GB and 6.5 GB of raw data; a straight line fits each tool closely):
+
+| Approach | Fixed start-up | Extra time per GB | Runtime at 54 MB / 2.2 GB / 6.5 GB |
+| --- | --- | --- | --- |
+| MapReduce (Hadoop Streaming, Python) | about 15 s | about 7.2 s | 15.1 / 30.3 / 61.4 s |
+| Hive (HiveQL on MapReduce) | about 32 s | about 6.0 s | 33.0 / 44.6 / 71.4 s |
+| Spark on YARN | about 12 s | about 4.8 s | - / 22.2 / 42.8 s (two sizes) |
+| Spark local mode | about 4.5 s | about 2.2 s | 4.2 / 9.9 / 18.5 s |
+
+**What it shows**
+
+- **All four agree exactly** again: 3,366 leaking meter-nights from 237 injected leaks.
+- **Two costs, not one.** Each tool has a fixed start-up cost and a cost per gigabyte. Hive has the highest start-up (about 32 s, compiling the query and starting several MapReduce jobs) but processes each extra gigabyte slightly faster than our MapReduce job, which pipes every line through a Python mapper and reducer (Hadoop Streaming) rather than running compiled Java. Spark on YARN has a lower start-up than either and the lowest cost per gigabyte of the three YARN tools.
+- **Like for like on YARN at 6.5 GB**: Spark 42.8 s, MapReduce 61.4 s (Spark 30% faster), Hive 71.4 s. The gap grows slowly with the data: Spark's lead over MapReduce went from 27% at 2.2 GB to 30% at 6.5 GB.
+- **Why Spark local mode is fastest**: it uses all 10 CPUs directly, while YARN in this container is set to 4 GB of memory for containers, so MapReduce, Hive and Spark on YARN run only a few tasks at once. On a real cluster YARN would have many machines' worth of resources; the local-mode figure shows what this one machine can do without that limit, not a fair comparison with the YARN tools.
+- **These are single-machine figures.** They show how the tools behave as the data grows here; they do not predict runtimes on DEWA's data on a cluster, and the report should not extrapolate them that way.
+- **Time to alert is unchanged**: whatever the tool, a nightly batch reports a leak about 2 hours after it shows. Streaming (benchmarks 1 and 2) did it in about 6 seconds.
+
+**Screenshot** (in `screenshots/mac/`): `5-5_benchmark_3x.png`.
+
+**Note**: the raw zone now holds this 30,000-meter data; the cleansed, curated and streaming results in HDFS are still from run 5 (10,000 meters). Regenerate with `--meters 10000 --days 30` and reload before running anything that combines them.
+
+## Sensitivity test: smallest detectable leak (12 November 2026)
+
+`spark-submit evaluation/sensitivity.py`: six datasets of 2,000 meters for 7 days (calibrated generator, seed 42, anomaly rate 0.3), identical except for the leak size, 156 leaks each. The leak rule (the one in `benchmark/spark_batch.py`, identical in results to the streaming job) was run at four thresholds. **Run again in the container on 12 November with identical results** (screenshot `7-1_sensitivity_test.png`).
+
+Share of leaks detected (in brackets: share of all nights a leak was running that were flagged):
+
+| Leak size (gallons per 15 min) | Threshold 0.2 | Threshold 0.3 | **Threshold 0.5 (pipeline)** | Threshold 1.0 |
+| --- | --- | --- | --- | --- |
+| 0.1 to 0.25 | 47% (34%) | 9% (3%) | 1% (0%) | 0% (0%) |
+| 0.25 to 0.5 | 100% (100%) | 87% (79%) | 13% (7%) | 0% (0%) |
+| 0.5 to 0.75 | 100% (100%) | 100% (100%) | 99% (98%) | 1% (0%) |
+| 0.75 to 1 | 100% (100%) | 100% (100%) | 100% (100%) | 15% (9%) |
+| 1 to 2 | 100% (100%) | 100% (100%) | 100% (100%) | 100% (99%) |
+| 1 to 6 (normal runs) | 100% (100%) | 100% (100%) | 100% (100%) | 100% (100%) |
+| **False alerts** (meter-nights, out of 7,000 water meter-nights) | **33** | 0 | 0 | 0 |
+
+**What it shows**
+
+- **The detection limit equals the threshold.** At the pipeline's 0.5 gallons per 15 minutes, leaks of 0.5 and above are caught almost every night; below it, detection collapses (13% for 0.25 to 0.5, 1% below 0.25). A leak of 0.5 gallons per 15 minutes is 48 gallons (about 218 litres) a day, around a fifth of an average Dubai home's use (258 gallons a day, DEWA 2025). Slower drips are invisible to this method at this threshold.
+- **The trade-off.** Lowering the threshold to 0.3 catches most 0.25 to 0.5 leaks (87%) with no false alerts on this data; 0.2 catches even smaller ones but starts flagging healthy meters (33 meter-nights, about 0.5%), mostly villas and commercial premises whose normal night use is highest.
+- **Why the pipeline keeps 0.5.** The clean result at 0.3 is partly because the same team wrote the generator: real night use is noisier (irrigation, pool pumps, night-shift businesses). Choosing 0.3 from this table would fit the rule to our own synthetic data. In a real deployment the threshold would be set per meter from its own night history (future work), not one value for all.
+- Normal-size leaks (1 to 6 gallons, all the main runs) are caught at every threshold up to 1.0, so the main results do not depend on the exact threshold.
+
+## Run 5: full-size run, final results (12 November 2026)
+
+**These are the headline figures for the report.**
+
+**Setup**
+
+| | |
+| --- | --- |
+| Machine | Maria's MacBook Air (Apple Silicon), one Docker container |
+| Data | 10,000 meters (5,000 water, 5,000 electricity), 30 days (1 to 30 July), 28,799,091 readings, calibrated generator (DEWA 2025 statistics), seed 42 |
+| History | Day 1, used for the spike baseline (rebuilt automatically: 10,000 meters) |
+| Live stream | Days 2 to 30: 27,839,091 readings replayed into Kafka, one 15-minute interval per second (10,000 readings a second), about 46 minutes |
+| Detection job | Spark Structured Streaming, micro-batch every 2 seconds, watermark 15 minutes, HBase off (see below) |
+| Anomalies injected | 300: 91 leak, 42 negative, 35 silent, 75 spike, 57 stuck |
+
+**Batch layer** (`batch/build_zones.py`): 28,799,091 raw readings, 28,799,049 cleansed, 42 quarantined (exactly the 42 injected negative readings), 0 duplicates, 300,000 curated daily usage rows (10,000 meters x 30 days). Hive registered all 30 daily partitions; the raw zone holds 480,000 readings per meter type per day.
+
+**Detection** (`evaluation/evaluate.py`, latency to `emitted_ts`, first alert per anomaly)
+
+| Type | Injected | Detected | Detection | False alerts | Median delay, simulated | Median latency, real |
+| --- | --- | --- | --- | --- | --- | --- |
+| leak | 91 | 91 | 100% | 0 | 525 min | 5.77 s |
+| negative | 42 | 42 | 100% | 0 | 0 min | 1.97 s |
+| silent | 35 | 35 | 100% | 0 | 15 min | 7.05 s |
+| spike | 75 | 75 | 100% | 0 | 0 min | 2.06 s |
+| stuck | 57 | 57 | 100% | 0 | 375 min | 6.55 s |
+| **All** | **300** | **300** | **100%** | **0** | | |
+
+- 13,775 alerts raised (repeats from sliding windows), 1,005 alert batches printed.
+- **The job kept up with 10 times the load of run 4**: latencies are within about a second of run 4 (1,000 meters), so processing did not fall behind the 10,000 readings a second.
+- Every alert was ready within about 7 seconds of the revealing reading reaching Kafka: far under the 5-minute requirement (R2).
+- **Stuck 57 of 57** here, but this is partly luck: none of the 57 stuck spells happened to fall in the 6 to 6.75-hour range that the on-the-hour windows can miss (see the scale test below, where 3 of 65 did). The limitation stands and goes in the report.
+- **HBase was off for this run.** HBase was shown working in runs 3 and 4 (30 open-alert rows for 30 anomalies, prefix scans in 0.02 s). Writing 10,000 readings a second through its REST server from one laptop would have measured that single-machine bottleneck rather than the pipeline; at DEWA's scale the HBase-Spark connector or bulk loading would write from the cluster's executors instead.
+
+**Storage per zone** (`hdfs dfs -du -h /user/hadoop/dewa`, after the run):
+
+| Zone | Size | Note |
+| --- | --- | --- |
+| Raw (CSV) | 2.2 GB | the data as received |
+| Cleansed (Parquet) | 338.7 MB | the same 28.8 million readings, **6.5 times smaller**: Parquet stores each column together and compresses it |
+| Landing (Parquet) | 527.5 MB | every streamed reading; larger than cleansed partly because the stream writes many small files (one set per 2-second micro-batch), which compress less well. Compacting them (for example nightly) is future work |
+| Checkpoints | 443.1 MB | the streaming job's offsets and window state, what lets it restart without losing or repeating data |
+| Alerts | 6.0 MB | 13,775 alerts |
+| Curated | 5.0 MB | 300,000 daily usage rows, dimensions and the baseline |
+| Quarantine | 59.7 KB | the 42 rejected readings |
+
+**Hive on the curated zone**: a plain SQL query on `daily_meter_usage` (meters whose lowest night flow stayed above 0.5 gallons) lists the leaking meters from the day after each leak starts, for example W0000504 in Dubai Marina from 3 July at about 3.3 gallons per 15 minutes. The batch layer finds the same leaks the next day; the stream finds them within seconds.
+
+**Screenshots** (in `screenshots/mac/`): `5-3-4_generate_full_size.png`, `5-3-4_zone_build_full_size.png`, `5-3-4_zone_sizes_full_size.png`, `5-3-4_hive_leak_query_full_size.png`, `5-3-2_full_size_run_stream_start.png`, `5-3-2_full_size_leak_alerts.png` (the first leak alerts of the run, W0007004 in Jebel Ali), `7-1_evaluation_full_size.png`.
+
+## Benchmark 2: the leak check in five tools, full size (12 November 2026)
+
+`bash scripts/run_benchmark.sh` on the run 5 data (28,799,091 readings, about 2.3 GB in the raw zone), 3 runs of each tool.
+
+| Approach | Runtime (median) | Range | Leak nights found | Correct | Missed | Extra | Time to alert | Lines of code |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MapReduce (Hadoop Streaming, Python) | 30.3 s | 28.3 to 31.3 s | 1,370 | 1,370 | 0 | 0 | about 2 h + 30 s | 36 |
+| Hive (HiveQL on MapReduce) | 44.6 s | 42.8 to 45.4 s | 1,370 | 1,370 | 0 | 0 | about 2 h + 45 s | 16 |
+| Spark batch (DataFrames, local mode) | 9.9 s | 9.4 to 10.7 s | 1,370 | 1,370 | 0 | 0 | about 2 h + 10 s | 37 |
+| Spark batch (DataFrames, on YARN) | 22.2 s | 21.5 to 23.5 s | 1,370 | 1,370 | 0 | 0 | about 2 h + 22 s | 37 |
+| Spark Structured Streaming | continuous | - | 1,370 | 1,370 | 0 | 0 | 5.8 s | 237 (all 5 checks) |
+
+**What it shows**
+
+- **All five agree exactly** on the 1,370 leaking meter-nights the 91 injected leaks produce.
+- Lines of code: the screenshots show 219 for the streaming job; the counter skipped part of that file by mistake (fixed 12 November, checked against a count made with Python's own parser). The correct figure, 237, is in both tables here.
+- **Like for like on YARN**: Spark 22.2 s, MapReduce 30.3 s, Hive 44.6 s. Spark is about 27% faster than hand-written MapReduce and twice as fast as Hive. Spark in local mode (9.9 s) shows how much of each figure is YARN job start-up.
+- **Scaling** from benchmark 1 (1,000 meters, 7 days) to here (about 43 times the data): MapReduce took 2.0 times as long (15.1 to 30.3 s), Hive 1.35 times (33.0 to 44.6 s), Spark local 2.4 times (4.2 to 9.9 s). Runtimes grew far less than the data, so at 2.3 GB every tool is still dominated by fixed start-up costs. This data is too small to show the gap that large-scale processing would; the report should say so rather than extrapolate.
+- **Time to alert decides the question.** Whatever the tool, a nightly batch reports a leak about 2 hours after it first shows; streaming reported it in 5.8 seconds. Batch runtimes of 10 to 45 seconds hardly matter next to the batch schedule. MapReduce and Hive suit the reporting side of the lake (Hive's 16 lines of SQL are the easiest to write and maintain); only the streaming path meets the alerting requirement.
+
+**Screenshot** (in `screenshots/mac/`): `5-5_benchmark_full_size.png`.
+
+## Scale test before the full-size run (12 November 2026)
+
+10,000 meters, 3 days (calibrated generator), streaming job in file mode on a 2-core machine, HBase off.
+
+- **Throughput**: the 2 live days (192 intervals, 1.92 million readings) took about 145 seconds of processing: 0.75 seconds per 15-minute interval. The replay sends one interval per second, so the job keeps up even on 2 cores.
+- **Detection**: 300 anomalies, no false alerts. Leak, negative, silent and spike 100%; **stuck 62 of 65 (95.4%)**.
+- **Why 3 stuck meters were missed**: the stuck rule uses 6-hour windows that start on the hour. A meter that records zeros for exactly 6 hours but starts at, say, 20:45 never fills a whole on-the-hour window. Detection is certain only for spells of at least 6 hours 45 minutes; the generator makes spells from 6 hours up, and the 3 missed ones lasted 6.0 to 6.25 hours. (The 1,000-meter data had no stuck spell that short.)
+- **The fix and its cost**: sliding the stuck windows every 15 minutes instead of every hour caught all 65, but the job then needed about 1.2 seconds per interval on this machine, slower than the replay. The rule was kept as it is for the full-size run; this is a limitation to report (section 6): shorter windows or a finer slide catch more, at the cost of more state and processing.
+
 ## Benchmark 1: the leak check in four tools, 1,000 meters (12 November 2026)
 
 `bash scripts/run_benchmark.sh` on the same data as run 4 (1,000 meters, 7 days, 671,792 readings in the raw zone, uncalibrated generator), 3 runs of each tool. Runtime is the wall-clock time of the whole command, start-up included.
@@ -11,7 +148,7 @@ Every measured result, with the conditions it came from. Report sections 5.5 and
 | MapReduce (Hadoop Streaming, Python) | 15.1 s | 12.4 to 15.2 s | 19 | 19 | 0 | 0 | about 2 h + 15 s | 36 |
 | Hive (HiveQL on MapReduce) | 33.0 s | 32.9 to 34.0 s | 19 | 19 | 0 | 0 | about 2 h + 33 s | 16 |
 | Spark batch (DataFrames, local mode) | 4.2 s | 4.2 to 4.4 s | 19 | 19 | 0 | 0 | about 2 h + 4 s | 36 |
-| Spark Structured Streaming | continuous | - | 19 | 19 | 0 | 0 | 6.5 s | 219 (all 5 checks) |
+| Spark Structured Streaming | continuous | - | 19 | 19 | 0 | 0 | 6.5 s | 237 (all 5 checks) |
 
 **What it shows**
 
@@ -102,6 +239,10 @@ Same setup and data as run 2, with the streaming job also writing to HBase (`--h
 **HDFS** after the run: raw, cleansed, quarantine, curated, landing, alerts and checkpoints folders under `/user/hadoop/dewa`.
 
 **Screenshots** (in `screenshots/mac/`): `5-3-2_streaming_with_hbase_start.png`, `5-3-2_streaming_with_hbase_stopped.png`, `5-3-3_hbase_count_open_alerts.png`, `5-3-3_hbase_open_alerts_scan.png`, `5-3-3_hbase_meter_readings_and_alert_history.png`, `7-1_evaluation_run3_and_hdfs_zones.png`.
+
+## HBase serving layer, clean screenshots (12 November 2026)
+
+`bash scripts/hbase_queries.sh` on the HBase tables still holding the run 4 data (1,000 meters; HBase was stopped before run 5, so they were not cleared). Same results as run 3: 30 open-alert rows for 30 anomalies (count in 0.06 s), a 10-row scan of open alerts in 0.02 s, meter W0000108's 4 newest readings newest-first in 0.02 s (about 7 gallons per 15 minutes late at night: the leak), and that leak's history as 10 versions across three nights (5 to 7 July). Screenshots: `5-3-3_hbase_queries_clean_1.png`, `5-3-3_hbase_queries_clean_2.png`.
 
 ## Batch zones and HBase start-up in the container (11 November 2026)
 
@@ -216,11 +357,7 @@ These fixes are worth a sentence in report section 6 (difficulties).
 ## Caveats (for report section 6)
 
 - **Best-case figures.** The same team wrote the data generator and the detection rules, so the rules suit the data. Real meters are noisier, and real leaks can be smaller than the 1 to 6 gallons per 15 minutes simulated here.
-- **Small, single-machine run.** 1,000 meters on one laptop. DEWA has about 2.3 million meters. Latency figures show the design works; throughput at DEWA's scale is extrapolated, not measured.
-- **Few anomalies.** 30 anomalies give a clear result but not a statistically strong one. The full-size run (TODO) gives about 300.
-
-## Planned
-
-- **Full-size run**: 10,000 meters, 30 days, about 300 anomalies.
-- **Sensitivity test**: smaller leaks (for example 0.2 to 1 gallon per 15 minutes) to find where detection starts to fail. Showing the limit of the method is stronger evidence than a perfect score.
-- **Benchmark**: the same leak check in MapReduce, Hive, Spark batch and Spark Streaming, timed.
+- **Single-machine run.** The largest run is 10,000 meters on one laptop. DEWA had about 2.4 million customer accounts in 2025 (1.28 million electricity and 1.16 million water, Annual Statistics Booklet 2025), roughly 240 times more. The runs show the design works and keeps up at 10,000 readings a second; throughput at DEWA's scale would need a cluster and is not measured here.
+- **Anomaly count.** 300 anomalies in the full-size run (30 in the smaller runs). Enough to show the method works across all five types, but each type has 35 to 91 cases, so detection rates are estimates, not guarantees.
+- **Window alignment.** Stuck spells shorter than 6 hours 45 minutes can be missed, depending on when they start (scale test). A finer window slide fixes this at a processing cost.
+- **HBase not used at full size** (see run 5).
