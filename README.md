@@ -179,6 +179,14 @@ bash scripts/speed_test.sh
 
 The replay squeezes 15 minutes into 1 second. A check that waits for later readings before it fires looks seconds-fast in the replay but is not in real time. The test makes its own small dataset (1,000 meters, 3 days, replacing what is in `data/` and the raw zone) and runs the stream twice on it, at 1 and at 4 seconds per interval, comparing the median latency over every alert record (hundreds of samples, not just each anomaly's first alert): a check whose latency does not grow when the replay slows down fires on the reading that reveals the anomaly, so its replay latency is its real-world latency. A check that waits for k later intervals gets k x 3 seconds slower. Results in `logs/speed_test_results.md`.
 
+**Restart test** (about 15 minutes):
+
+```
+bash scripts/restart_test.sh
+```
+
+Checks that the streaming job loses and repeats nothing when it crashes. It runs the same replay twice on its own small dataset (1,000 meters, 3 days, in `data/restart_test`) in a separate lake folder, `/user/hadoop/dewa_restart_test`, so the main lake and its results are left alone. Run A runs without interruption. In run B the detection job is killed with `kill -9` partway through (by default 110 seconds in: 03:30 on the second live day, in the middle of that night's leak windows) and restarted from its checkpoint while the replay carries on into Kafka. Both runs are evaluated, then `evaluation/compare_runs.py` compares them: detection and false alerts per check, every alert window each run raised (a window in one run only would be an alert the restart lost or added), and each run's landing zone against the raw zone (no reading missing, none stored twice). Output in `logs/restart_test_results.txt`. Latency in run B is higher for the anomalies that came in while the job was down: that is the catch-up, not a fault.
+
 ### 6. Benchmark: why some tools fit and others do not
 
 ```

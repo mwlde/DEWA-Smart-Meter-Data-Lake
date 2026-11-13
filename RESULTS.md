@@ -2,6 +2,40 @@
 
 Every measured result, with the conditions it came from. Report sections 5.5 and 7.1 take their figures from here. Add a new run at the top; keep the old ones. Screenshots are in `screenshots/mac/`; those from runs before the 13 November fix (runs 1 to 5, the old benchmark screenshots and the first data loads) are in `screenshots/mac/superseded/`, kept as the record behind the older entries below.
 
+## Restart test (13 November 2026)
+
+A check of `scripts/restart_test.sh` before it runs in the container: the same steps in file mode (no Kafka or HDFS), 1,000 meters, 3 days (seed 42, 22 empty premises, 1% of readings late), one interval per second. Run A without interruption; in run B the detection job was killed with `kill -9` 110 seconds into the replay and restarted from its checkpoint. Compared with `evaluation/compare_runs.py`.
+
+| Check | Injected | Detected A | Detected B | Alert windows A | Alert windows B | Only in A | Only in B |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| leak | 11 | 11 | 11 | 99 | 99 | 0 | 0 |
+| negative | 3 | 3 | 3 | 3 | 3 | 0 | 0 |
+| silent | 6 | 6 | 6 | 36 | 36 | 0 | 0 |
+| spike | 3 | 3 | 3 | 3 | 3 | 0 | 0 |
+| stuck | 6 | 6 | 6 | 67 | 67 | 0 | 0 |
+
+- No false alerts in either run; 209 alert records each (one repeated record for the same window in each, from a late reading).
+- Landing zone against the raw zone (191,824 readings on the streamed days): both runs 191,824 stored, 0 missing, 0 extra.
+- Median first-alert latency 1.0 to 1.9 s higher in run B than in A. Run B includes the anomalies that arrived while the job was down, which waited for the restart.
+- To repeat in the container with Kafka: `bash scripts/restart_test.sh`.
+
+## Benchmark 4: the leak check on the run 6 data (13 November 2026)
+
+Benchmark 2 again, on the final full-size data (the run 6 dataset: 10,000 meters, 30 days, 2.2 GB, with 226 empty premises), with the streaming row from run 6. `bash scripts/run_benchmark.sh`, three runs of each batch tool, Maria's MacBook Air, one Docker container.
+
+| Approach | Runtime (median) | Range | Leak nights found | Correct | Missed | Extra | Time to alert | Lines of code |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MapReduce (Hadoop Streaming, Python) | 30.8 s | 28.3 to 33.5 s | 1370 | 1370 | 0 | 0 | about 2 h + 31 s | 36 |
+| Hive (HiveQL on MapReduce) | 45.3 s | 43.6 to 45.4 s | 1370 | 1370 | 0 | 0 | about 2 h + 45 s | 16 |
+| Spark batch (DataFrames, local mode) | 9.8 s | 9.3 to 10.0 s | 1370 | 1370 | 0 | 0 | about 2 h + 10 s | 39 |
+| Spark batch (DataFrames, on YARN) | 25.2 s | 24.2 to 25.5 s | 1370 | 1370 | 0 | 0 | about 2 h + 25 s | 39 |
+| Spark Structured Streaming | continuous | - | 1370 | 1370 | 0 | 0 | 1.9 s | 280 (all 5 checks) |
+
+- Every approach found the same 1,370 leaking meter-nights the ground truth expects (91 injected leaks), none missed and none extra, as in benchmark 2. The empty premises did not add any.
+- Against benchmark 2 (same size, old data): MapReduce 30.3 to 30.8 s, Hive 44.6 to 45.3 s, Spark on YARN 22.2 to 25.2 s, Spark local 9.9 to 9.8 s. Run-to-run noise on one laptop; the ranking is the same.
+- Streaming: 5.8 to 1.9 s, because leak no longer waits two replay intervals (update mode). 237 to 280 lines: the water stuck rule, the late-readings listener and the restart-safe alert writes.
+- Screenshot: `5-5_benchmark_run6.png`. It replaces `5-5_benchmark_full_size.png` (benchmark 2), now in `screenshots/mac/superseded/`.
+
 ## Run 6: full-size run on the new code, final results (13 November 2026)
 
 **These are the headline figures for the report**, replacing run 5.

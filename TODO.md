@@ -34,7 +34,8 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [x] Run 6: full size on regenerated data (empty premises, late readings): 290 of 300 (the 10 water stuck spells under 24 hours, by design), no false alerts, no alerts on 226 empty premises, no late readings dropped
 - [ ] Optional: zones from the landing zone after run 6 (`build_zones.py --source landing`), compare counts, then rebuild from raw (`build_zones.py`). Tested here on small data (same 191,821 readings either way)
 - [x] Warehouse and reports (`build_warehouse.py`, `hive/03_warehouse.sql`, `hive/04_reports.sql`), screenshots for 5.3.5
-- [ ] Benchmark 2 again on the run 6 data, for a screenshot with the new streaming row (`bash scripts/run_benchmark.sh`, 30 to 45 minutes)
+- [x] Benchmark 2 again on the run 6 data (benchmark 4): all tools found the same 1,370 leak nights; streaming 1.9 s
+- [ ] Restart test in the container (`bash scripts/restart_test.sh`): run A uninterrupted, run B killed and restarted; compare alerts and landing zones. Tested here in file mode
 
 Done before:
 
@@ -76,6 +77,6 @@ Screenshots go in `screenshots/mac/` (Mac) or `screenshots/other/` (any other se
 - [x] 5.5 Replay-speed test table, micro-batch table
 - [x] 7.1 Evaluation table, run 6 (`7-1_evaluation_run6.png`); run 6 data, raw zone, leak alerts and zone sizes (`5-3-4_generate_run6.png`, `5-3-4_raw_zone_run6.png`, `5-3-2_run6_leak_alerts.png`, `5-3-4_zone_sizes_run6.png`)
 - [x] 5.5 Benchmark table, 1,000 meters (`5-5_benchmark_1000_meters.png`)
-- [x] 5.5 Benchmark table, full-size data (`5-5_benchmark_full_size.png`, run 5; to be replaced by the run 6 benchmark)
+- [x] 5.5 Benchmark table, full-size data (`5-5_benchmark_run6.png`, benchmark 4; the run 5 one is in `superseded/`)
 - [x] 7.1 Evaluation table, 1,000-meter run (`7-1_evaluation_results_1000_meters.png`)
 - [x] 7.1 Evaluation table, full-size run (`7-1_evaluation_full_size.png`)
