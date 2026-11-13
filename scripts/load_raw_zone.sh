@@ -25,6 +25,11 @@ hdfs dfs -mkdir -p $BASE/meters $BASE/readings $BASE/ground_truth
 
 hdfs dfs -put -f data/meters.csv $BASE/meters/
 hdfs dfs -put -f data/ground_truth.csv $BASE/ground_truth/
+#empty premises (normal behaviour, used by evaluation/evaluate.py); older datasets have none
+if [ -f data/vacancies.csv ]; then
+  hdfs dfs -mkdir -p $BASE/vacancies
+  hdfs dfs -put -f data/vacancies.csv $BASE/vacancies/
+fi
 for day in data/readings/dt=*; do
   hdfs dfs -put -f "$day" $BASE/readings/
 done

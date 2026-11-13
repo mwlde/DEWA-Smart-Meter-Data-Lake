@@ -40,13 +40,22 @@ def table_exists(url, table, timeout=5):
         return False
 
 
+def _cell(col, val, ts):
+    cell = {"column": _b64(col), "$": _b64(val)}
+    if ts is not None:
+        cell["timestamp"] = int(ts)   #cell version; without it hbase uses the time of the write
+    return cell
+
+
 def put_rows(url, table, rows, timeout=30):
-    """rows: list of (row_key, {"family:qualifier": value}). Values become strings."""
+    """rows: list of (row_key, {"family:qualifier": value}) or (row_key, cells, version_ms).
+    Values become strings."""
     for i in range(0, len(rows), CHUNK):
         body = {"Row": [
-            {"key": _b64(key),
-             "Cell": [{"column": _b64(col), "$": _b64(val)} for col, val in cells.items() if val is not None]}
-            for key, cells in rows[i:i + CHUNK]
+            {"key": _b64(row[0]),
+             "Cell": [_cell(col, val, row[2] if len(row) > 2 else None)
+                      for col, val in row[1].items() if val is not None]}
+            for row in rows[i:i + CHUNK]
         ]}
         req = urllib.request.Request(
             f"{url}/{table}/batch", data=json.dumps(body).encode("utf-8"), method="PUT",

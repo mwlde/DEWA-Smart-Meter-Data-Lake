@@ -7,6 +7,14 @@
 BASE=/user/hadoop/dewa
 BOOT=localhost:9092
 
+#a detection job left running by an earlier run (if the script that started it
+#stopped on an error) would fight the new one over the checkpoints: stop it first
+if pgrep -f "streaming/detect_stream.py" > /dev/null; then
+  echo "Stopping a detection job still running from an earlier run..."
+  pkill -f "streaming/detect_stream.py" || true
+  sleep 5
+fi
+
 echo "Clearing streaming output in HDFS..."
 hdfs dfs -rm -r -f $BASE/checkpoints $BASE/alerts $BASE/landing $BASE/evaluation > /dev/null 2>&1
 

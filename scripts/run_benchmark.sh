@@ -3,14 +3,23 @@
 #spark batch job (in local mode and on yarn) on the raw zone, each timed several times, then compared with each
 #other, with the streaming job's alerts and with the injected leaks.
 #run inside the container, from /home/hadoop/dewa (hadoop running, raw zone loaded):
-#  bash scripts/run_benchmark.sh        (3 runs of each tool)
-#  bash scripts/run_benchmark.sh 5      (5 runs of each tool)
+#  bash scripts/run_benchmark.sh                  (3 runs of each tool)
+#  bash scripts/run_benchmark.sh 5                (5 runs of each tool)
+#  bash scripts/run_benchmark.sh --no-streaming   (data the stream did not run on: no streaming row)
 #each tool's own output goes to logs/benchmark_<tool>.log
 set -eE -o pipefail
 trap 'echo; echo "FAILED in run_benchmark.sh at line $LINENO: $BASH_COMMAND"' ERR
 cd "$(dirname "$0")/.."
 
-RUNS=${1:-3}
+RUNS=3
+COMPARE_OPTS=""
+for a in "$@"; do
+  case "$a" in
+    --no-streaming) COMPARE_OPTS="--no-streaming" ;;
+    *[!0-9]*|"") echo "FAILED: unknown option $a (use a number of runs and/or --no-streaming)"; exit 1 ;;
+    *) RUNS=$a ;;
+  esac
+done
 BASE=/user/hadoop/dewa
 OUT=$BASE/benchmark
 TIMES=logs/benchmark_times.csv
@@ -73,4 +82,4 @@ if ! (timed spark_batch_yarn spark-submit --master yarn benchmark/spark_batch.py
 fi
 
 say "comparing the results"
-spark-submit benchmark/compare.py --times $TIMES 2>/dev/null
+spark-submit benchmark/compare.py --times $TIMES $COMPARE_OPTS 2>/dev/null

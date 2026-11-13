@@ -44,10 +44,14 @@ def code_lines(paths):
         in_doc = False
         for line in open(p):
             s = line.strip()
-            if s.startswith('"""'):
-                in_doc = not in_doc if s.count('"""') == 1 else in_doc
+            quotes = s.count('"""')
+            if in_doc:
+                in_doc = quotes % 2 == 0   #the docstring ends on the line with its closing quotes
                 continue
-            if in_doc or not s or s.startswith("#") or s.startswith("--"):
+            if s.startswith('"""'):
+                in_doc = quotes == 1       #one-line docstrings open and close on the same line
+                continue
+            if not s or s.startswith("#") or s.startswith("--"):
                 continue
             n += 1
     return n
@@ -81,6 +85,8 @@ def main():
     p.add_argument("--base", default="/user/hadoop/dewa")
     p.add_argument("--times", default="logs/benchmark_times.csv")
     p.add_argument("--out", default="logs/benchmark_results.md")
+    p.add_argument("--no-streaming", action="store_true",
+                   help="leave out the streaming row (when the stream did not run on this data)")
     args = p.parse_args()
 
     with step("starting Spark"):
@@ -123,6 +129,8 @@ def main():
 
         #spark streaming: the leak alerts and latency of the last streaming run, if any
         try:
+            if args.no_streaming:
+                raise LookupError("left out (--no-streaming)")
             alerts = (spark.read.parquet(f"{args.base}/alerts").where(F.col("alert_type") == "leak")
                       .select("meter_id", F.date_format("window_start", "yyyy-MM-dd").alias("night"))
                       .distinct().collect())
@@ -139,6 +147,8 @@ def main():
             rows.append(["Spark Structured Streaming", "continuous", "-", str(len(found)),
                          str(len(found & live)), str(len(live - found)), str(len(found - live)),
                          latency, f"{code_lines(['streaming/detect_stream.py'])} (all 5 checks)"])
+        except LookupError as e:
+            print(f"  Spark Streaming: {e}")
         except Exception:
             print("  Spark Streaming: no alerts in HDFS (run bash scripts/run_stream.sh first), row skipped")
 

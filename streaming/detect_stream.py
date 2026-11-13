@@ -11,8 +11,19 @@ Spark Structured Streaming:
   spike     one reading more than 4 times the meter's normal maximum (its 99th
             percentile from the batch layer, curated/meter_baseline)
   negative  a negative reading (meter fault)
-  stuck     no consumption at all for 6 hours (meter stopped recording)
+  stuck     electricity meter: zero for 6 hours (even an empty home draws power).
+            water meter: zero for 24 hours while the premise's electricity shows
+            it is occupied. A water meter reading zero is normal in an empty home,
+            so water alone cannot tell a stuck meter from a vacant one.
   silent    readings missing: fewer than 4 readings in a 1-hour window
+
+When alerts fire. Leak and stuck run in update mode: a window raises its alert
+in the micro-batch that brings its last qualifying reading, without waiting for
+any later reading. Spike and negative are checked reading by reading. Silent is
+different by nature: a missing reading only shows once later readings have
+arrived, so it runs in append mode and fires when the watermark passes the end
+of its window. The watermark (30 minutes) is how late a reading may arrive and
+still be counted; it delays only the silent alerts.
 
 Outputs:
   alerts zone (Parquet)      every alert, for evaluation and reporting
@@ -45,6 +56,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  #repo root
 
 from pyspark.sql import SparkSession, functions as F  #noqa: E402
+from pyspark.sql.streaming import StreamingQueryListener  #noqa: E402
 
 from common.errors import banner, fail, run, step  #noqa: E402
 import hbase_rest  #noqa: E402
@@ -56,8 +68,14 @@ READING_DDL = ("meter_id STRING, meter_type STRING, premise_id STRING, area STRI
 LEAK_MIN_FLOW = 0.5          #gallons per 15 mins, every reading in the window
 NIGHT_HOURS = (1, 3)         #readings from 01:00 to 03:45
 SPIKE_FACTOR = 4.0           #times the meter's 99th percentile (3.0 gave false alerts on busy days)
-STUCK_HOURS = 6
-WATERMARK = "15 minutes"     #how late a reading may arrive (event time)
+STUCK_HOURS = 6              #electricity meters
+STUCK_WATER_HOURS = 24       #water meters (an empty home reads zero for days)
+OCCUPIED_MIN = 0.6           #premise electricity over the day, as a share of its normal: below this it looks empty
+WATERMARK = "30 minutes"     #how late a reading may arrive and still be counted (event time)
+
+#how each check outputs its alerts: update = as soon as the window qualifies,
+#append = only when the watermark has passed the end of the window
+OUTPUT_MODE = {"leak": "update", "stuck": "update", "stuck_water": "update", "silent": "append", "point": "append"}
 
 ALERT_COLUMNS = ["alert_type", "meter_id", "meter_type", "area", "window_start", "window_end",
                  "value", "detail", "last_ingest_ts", "alert_ts"]
@@ -86,6 +104,7 @@ def parse_args():
     p.add_argument("--idle-stop", type=int, default=30,
                    help="stop by itself after this many seconds without new readings (0 = never)")
     p.add_argument("--quiet", action="store_true", help="do not print alerts to the console")
+    p.add_argument("--watermark", default=WATERMARK, help="how late a reading may arrive and still be counted")
     return p.parse_args()
 
 
@@ -138,16 +157,17 @@ def read_stream(spark, args):
                              F.col("timestamp").alias("ingest_ts"))
                   .select("r.*", "ingest_ts"))
     else:
+        #arrival time = when replay.py wrote the file, so latency is measured as with kafka
         parsed = (spark.readStream.schema(READING_DDL)
-                  .option("maxFilesPerTrigger", 4)          #one simulated hr per micro-batch
                   .csv(args.input)
-                  .withColumn("ingest_ts", F.current_timestamp()))
+                  .select("*", F.col("_metadata.file_modification_time").alias("ingest_ts")))
 
+    #no watermark here: each check sets its own (the landing copy and the point
+    #checks keep no state, so they need none)
     return (parsed
             .withColumn("event_ts", F.to_timestamp("ts", "yyyy-MM-dd'T'HH:mm:ss"))
             .withColumn("dt", F.to_date("event_ts"))
-            .where(F.col("event_ts").isNotNull())
-            .withWatermark("event_ts", WATERMARK))
+            .where(F.col("event_ts").isNotNull()))
 
 
 def window_alert(df, alert_type, value_col, detail):
@@ -161,10 +181,12 @@ def window_alert(df, alert_type, value_col, detail):
 def build_checks(spark, readings, args):
     checks = {}
     keys = ["meter_id", "meter_type", "area"]
+    timed = readings.withWatermark("event_ts", args.watermark)
+    #a window is complete once its last 15-minute reading has arrived
+    complete = F.col("last_event") >= F.col("window.end") - F.expr("INTERVAL 15 MINUTES")
 
-    #leak: minimum night flow on water meters
-    night = readings.where((F.col("meter_type") == "water") &
-                           F.hour("event_ts").between(*NIGHT_HOURS))
+    #leak: minimum night flow on water meters. fires on the 4th reading of the window
+    night = timed.where((F.col("meter_type") == "water") & F.hour("event_ts").between(*NIGHT_HOURS))
     leak = (night.groupBy(F.window("event_ts", "1 hour", "15 minutes"), *keys)
             .agg(F.count("*").alias("n"), F.min("interval_value").alias("min_flow"),
                  F.max("ingest_ts").alias("last_ingest_ts"))
@@ -172,17 +194,45 @@ def build_checks(spark, readings, args):
     checks["leak"] = window_alert(leak, "leak", "min_flow",
                                   f"night flow above {LEAK_MIN_FLOW} IG in every reading for 1 hour")
 
-    #stuck: no consumption for STUCK_HOURS
-    stuck = (readings.groupBy(F.window("event_ts", f"{STUCK_HOURS} hours", "1 hour"), *keys)
+    #stuck, electricity: zero for STUCK_HOURS. an empty home still draws power
+    #(fridge, a/c, standby), so exact zero means the meter has stopped
+    elec = timed.where(F.col("meter_type") == "electricity")
+    stuck = (elec.groupBy(F.window("event_ts", f"{STUCK_HOURS} hours", "1 hour"), *keys)
              .agg(F.count("*").alias("n"), F.max("interval_value").alias("max_value"),
-                  F.max("ingest_ts").alias("last_ingest_ts"))
-             .where((F.col("n") >= STUCK_HOURS * 4 - 4) & (F.col("max_value") == 0)))
+                  F.max("event_ts").alias("last_event"), F.max("ingest_ts").alias("last_ingest_ts"))
+             .where((F.col("n") >= STUCK_HOURS * 4 - 4) & (F.col("max_value") == 0) & complete))
     checks["stuck"] = window_alert(stuck, "stuck", "max_value", f"zero consumption for {STUCK_HOURS} hours")
+
+    #stuck, water: zero for STUCK_WATER_HOURS while the premise is occupied. occupancy =
+    #the premise's electricity over the same window as a share of its normal (baseline
+    #average): about 1 in a lived-in home, far lower in an empty one
+    baseline = spark.read.parquet(f"{args.base}/curated/meter_baseline")
+    water = F.col("meter_type") == "water"
+    premise = (timed.join(F.broadcast(baseline.select("meter_id", "avg_value")), "meter_id", "left")
+               .groupBy(F.window("event_ts", f"{STUCK_WATER_HOURS} hours", "1 hour"), "premise_id")
+               .agg(F.max(F.when(water, F.col("meter_id"))).alias("meter_id"),
+                    F.max(F.when(water, F.col("area"))).alias("area"),
+                    F.count(F.when(water, 1)).alias("n"),
+                    F.max(F.when(water, F.col("interval_value"))).alias("max_value"),
+                    F.max(F.when(water, F.col("event_ts"))).alias("last_event"),
+                    F.max(F.when(water, F.col("ingest_ts"))).alias("last_ingest_ts"),
+                    F.max(F.when(~water, F.col("event_ts"))).alias("last_elec_event"),
+                    F.avg(F.when(~water & (F.col("avg_value") > 0),
+                                 F.col("interval_value") / F.col("avg_value"))).alias("occupancy"))
+               #complete for both meters, so the alert fires once, with the final occupancy
+               .where((F.col("n") >= STUCK_WATER_HOURS * 4 - 4) & (F.col("max_value") == 0) & complete &
+                      (F.col("last_elec_event") >= F.col("window.end") - F.expr("INTERVAL 15 MINUTES")) &
+                      (F.col("occupancy") >= OCCUPIED_MIN))
+               .withColumn("meter_type", F.lit("water")))
+    checks["stuck_water"] = window_alert(premise, "stuck", "occupancy",
+                                         f"zero water for {STUCK_WATER_HOURS} hours in an occupied premise "
+                                         f"(value = electricity as a share of normal)")
 
     #silent: readings missing (only windows that start inside the live stream).
     #a fully silent hr has no rows at all, so it is the partial windows at the start
-    #and end of an outage (1 to 3 readings) that raise the alert
-    silent = (readings.groupBy(F.window("event_ts", "1 hour", "15 minutes"), *keys)
+    #and end of an outage (1 to 3 readings) that raise the alert. append mode: the
+    #count is only final once the watermark has passed the end of the window
+    silent = (timed.groupBy(F.window("event_ts", "1 hour", "15 minutes"), *keys)
               .agg(F.count("*").alias("n"), F.max("ingest_ts").alias("last_ingest_ts"))
               .where((F.col("n") < 4) &
                      (F.col("window.start") >= F.to_timestamp(F.lit(args.stream_start)))))
@@ -196,8 +246,7 @@ def build_checks(spark, readings, args):
                          F.col("ingest_ts").alias("last_ingest_ts"), F.current_timestamp().alias("alert_ts"))
 
     negative = point_alert(readings.where(F.col("interval_value") < 0), "negative", F.lit("negative reading"))
-    baseline = spark.read.parquet(f"{args.base}/curated/meter_baseline").select("meter_id", "p99_value")
-    spikes = (readings.join(F.broadcast(baseline), "meter_id")   #stream-static join
+    spikes = (readings.join(F.broadcast(baseline.select("meter_id", "p99_value")), "meter_id")   #stream-static join
               .where((F.col("p99_value") > 0) &
                      (F.col("interval_value") > SPIKE_FACTOR * F.col("p99_value"))))
     spike = point_alert(spikes, "spike",
@@ -211,8 +260,11 @@ def build_checks(spark, readings, args):
 
 def alert_sink(args, name):
     #one folder per query: queries run in parallel, and two jobs appending to the
-    #same folder at once clash over its _temporary files. reading {base}/alerts
-    #still returns every alert (source and alert_type come from the folder names)
+    #same folder at once clash over its _temporary files. inside it, one folder per
+    #micro-batch, overwritten rather than appended: if the job stops mid-batch, spark
+    #runs that batch again with the same batch id on restart, and it is written once,
+    #not twice. reading {base}/alerts still returns every alert (source, batch and
+    #alert_type come from the folder names)
     alerts_path = f"{args.base}/alerts/source={name}"
 
     def emit(batch, batch_id):
@@ -221,7 +273,7 @@ def alert_sink(args, name):
             n = batch.count()   #runs the micro-batch's computation
             if n:
                 out = batch.withColumn("emitted_ts", F.lit(time.time()).cast("timestamp")).persist()
-                out.write.mode("append").partitionBy("alert_type").parquet(alerts_path)
+                out.write.mode("overwrite").partitionBy("alert_type").parquet(f"{alerts_path}/batch={batch_id}")
                 if args.kafka_alerts:
                     (out.select(F.col("meter_id").alias("key"),
                                 F.to_json(F.struct(*OUTPUT_COLUMNS)).alias("value"))
@@ -229,12 +281,15 @@ def alert_sink(args, name):
                      .option("kafka.bootstrap.servers", args.bootstrap)
                      .option("topic", "alerts").save())
                 if args.hbase:
+                    #cell version = the window's start, so each window is one version of the
+                    #alert's history, and a batch re-run after a restart overwrites it
                     hbase_rest.put_rows(args.hbase_url, "meter_alerts", [
                         (f"{r.meter_id}#{r.alert_type}",
                          {"a:meter_type": r.meter_type, "a:area": r.area,
                           "a:window_start": r.window_start, "a:window_end": r.window_end,
-                          "a:value": r.value, "a:detail": r.detail, "a:alert_ts": r.alert_ts})
-                        for r in out.collect()])
+                          "a:value": r.value, "a:detail": r.detail, "a:alert_ts": r.alert_ts},
+                         r.version_ms)
+                        for r in out.withColumn("version_ms", F.unix_timestamp("window_start") * 1000).collect()])
                 if not args.quiet:
                     with PRINT_LOCK:
                         print(f"\n[{name}] batch {batch_id}: {n} alert(s)")
@@ -275,6 +330,27 @@ def hbase_readings_sink(args):
 
 
 #---------------------------------------------------------------------- main
+
+class LateReadings(StreamingQueryListener):
+    """Counts readings each check ignored because they arrived later than the
+    watermark allows (spark drops them from its windows)."""
+    def __init__(self):
+        self.dropped = {}
+
+    def onQueryStarted(self, event):
+        pass
+
+    def onQueryProgress(self, event):
+        p = event.progress
+        n = sum(op.numRowsDroppedByWatermark for op in p.stateOperators)
+        self.dropped[p.name] = self.dropped.get(p.name, 0) + n
+
+    def onQueryIdle(self, event):
+        pass
+
+    def onQueryTerminated(self, event):
+        pass
+
 
 def wait_until_idle(spark, queries, idle_stop):
     """Run until no new readings have arrived for idle_stop seconds (after the
@@ -320,11 +396,13 @@ def main():
             queries.append(readings.writeStream.foreachBatch(hbase_readings_sink(args))
                            .option("checkpointLocation", f"{args.base}/checkpoints/hbase_readings")
                            .outputMode("append").trigger(**trigger).queryName("hbase_readings").start())
+        late = LateReadings()
+        spark.streams.addListener(late)
         for name, df in checks.items():
             queries.append(df.writeStream
                            .foreachBatch(alert_sink(args, name))
                            .option("checkpointLocation", f"{args.base}/checkpoints/{name}")
-                           .outputMode("append").trigger(**trigger).queryName(name).start())
+                           .outputMode(OUTPUT_MODE[name]).trigger(**trigger).queryName(name).start())
         print(f"  started {len(queries)} queries: " + ", ".join(q.name for q in queries))
         print("  waiting for readings (start the replay in another terminal)")
 
@@ -335,6 +413,9 @@ def main():
             print("All available data processed.")
         else:
             wait_until_idle(spark, queries, args.idle_stop)
+    time.sleep(1)   #let the last progress events arrive
+    print("Readings dropped as later than the watermark (" + args.watermark + "): " +
+          ", ".join(f"{q} {late.dropped.get(q, 0):,}" for q in checks))
     spark.stop()
 
 

@@ -18,8 +18,16 @@ Validation rules (a reading goes to quarantine if any fails):
   negative_value  negative consumption (a meter fault)
 Duplicates (same meter and timestamp) are removed, keeping one copy.
 
+Source: by default the raw zone, the CSV files loaded by scripts/load_raw_zone.sh
+(day 1 included, which the stream never sends: it is the baseline history). With
+--source landing it reads the landing zone instead: every reading that arrived
+through Kafka, as the streaming job stored it. That is the single-ingestion path of
+the architecture (Kafka feeds both layers); the two sources give the same cleansed
+readings for the streamed days.
+
 Run inside the container, from /home/hadoop/dewa:
     spark-submit batch/build_zones.py 2>/dev/null
+    spark-submit batch/build_zones.py --source landing 2>/dev/null
 """
 
 import argparse
@@ -41,6 +49,8 @@ NIGHT_HOURS = (1, 3)   #01:00 to 03:45, same window as the streaming leak check
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--base", default="/user/hadoop/dewa", help="data lake root")
+    p.add_argument("--source", choices=["raw", "landing"], default="raw",
+                   help="raw zone (CSV as loaded) or landing zone (what arrived through kafka)")
     args = p.parse_args()
     base = args.base
 
@@ -52,11 +62,18 @@ def main():
         spark.sparkContext.setLogLevel("WARN")
 
     #------------------------------------------------------------------ raw zone
-    with step("reading the raw zone"):
+    with step(f"reading the {args.source} zone"):
         try:
-            raw = (spark.read.option("header", True).schema(READING_SCHEMA)
-                   .csv(f"{base}/raw/readings")
-                   .withColumn("dt", F.col("dt").cast("string")))
+            if args.source == "raw":
+                raw = (spark.read.option("header", True).schema(READING_SCHEMA)
+                       .csv(f"{base}/raw/readings")
+                       .withColumn("dt", F.col("dt").cast("string")))
+            else:
+                #same columns as the raw csv, so the validation below is identical
+                raw = (spark.read.parquet(f"{base}/landing/readings")
+                       .withColumn("ts", F.date_format("event_ts", "yyyy-MM-dd'T'HH:mm:ss"))
+                       .select("meter_id", "meter_type", "premise_id", "area", "ts", "interval_value",
+                               "unit", "cumulative_value", "signal_quality", F.col("dt").cast("string")))
             meters = spark.read.option("header", True).schema(METER_SCHEMA).csv(f"{base}/raw/meters")
             n_meters = meters.count()
         except Exception as e:
@@ -111,8 +128,8 @@ def main():
         n_quar = spark.read.parquet(f"{base}/quarantine/readings").count()
         n_daily = spark.read.parquet(f"{base}/curated/daily_meter_usage").count()
 
-        print("\nZone build finished")
-        print(f"  raw readings        {n_raw:>10,}")
+        print(f"\nZone build finished (source: {args.source} zone)")
+        print(f"  {args.source + ' readings':<20}{n_raw:>10,}")
         print(f"  cleansed readings   {n_clean:>10,}")
         print(f"  quarantined         {n_quar:>10,}")
         print(f"  duplicates removed  {n_raw - n_clean - n_quar:>10,}")
