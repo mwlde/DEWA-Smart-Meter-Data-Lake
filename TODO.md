@@ -12,14 +12,31 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [x] 6. Streaming detection job: leak, spike, negative, stuck, silent (`streaming/detect_stream.py`), with the baseline batch job it uses (`streaming/baseline.py`). Stops by itself 30 seconds after the replay ends
 - [x] 7. HBase tables for each meter's readings and open alerts, fed by the streaming job (`scripts/start_hbase.sh`, `streaming/hbase_rest.py`, `hbase/queries.hbase`). Run on real HBase: 30 open-alert rows for 30 anomalies
 - [x] 8. Batch job: raw zone to cleansed zone (validated, deduplicated, Parquet), quarantine and curated zone (`batch/build_zones.py`, `hive/02_lake_zones.sql`). Run in the container
-- [ ] 9. Hive star schema over the curated zone (design from task 5 of the team split)
-- [x] 10. Benchmark: the same leak check in MapReduce, Hive and Spark batch, timed and compared with each other, the streaming job and the injected leaks (`scripts/run_benchmark.sh`, `benchmark/`). Tested here; first run in the container still to do
+- [x] 9. Hive star schema over the curated zone (`batch/build_warehouse.py`, `hive/03_warehouse.sql`, `hive/04_reports.sql`). Run in the container on the run 6 data: all six reports ran
+- [x] 15. Latency fix (13 November): leak and stuck fire on the reading that completes their window (update mode); silent waits for the watermark (append). Replay-speed test (`scripts/speed_test.sh`, `evaluation/speed_compare.py`)
+- [x] 16. Restart-safe alert writes (one folder per micro-batch, overwritten; HBase cell version = window start). Kill and restart tested here
+- [x] 17. Hard negatives: empty premises in the generator (`--vacant-rate`, default 5%), late readings in the replay (`--late-share`, 1% in `run_stream.sh`); water stuck check needs 24 hours of zero in an occupied premise
+- [x] 18. MapReduce micro-batch experiment (`scripts/run_microbatch.sh`, `benchmark/stuck_mapper.py`, `benchmark/stuck_reducer.py`)
+- [x] 19. Batch layer from the landing zone (`batch/build_zones.py --source landing`): same cleansed readings as from the raw zone for the streamed days (tested here)
+- [x] 10. Benchmark: the same leak check in MapReduce, Hive and Spark batch, timed and compared with each other, the streaming job and the injected leaks (`scripts/run_benchmark.sh`, `benchmark/`). Run in the container on three data sizes (benchmarks 1 to 3)
 - [x] 11. Evaluation script: alerts against ground truth (`evaluation/evaluate.py`)
 - [x] 12. Setup for Mac and Windows (`SETUP.md`, `Dockerfile`, `.gitattributes`)
 - [x] 13. Results log (`RESULTS.md`)
 - [x] 14. Loud failures: every script names its step and prints a FAILED banner that shows even with `2>/dev/null` (`common/errors.py`); pre-flight checks for Kafka, baseline and HBase
 
 ## Check and run
+
+**Next (13 November), in the container, in this order:**
+
+- [x] Run 6a: 1,000-meter run with HBase on the new code: 27 of 30 (3 water stuck spells under 24 hours, by design), no false alerts, no alerts on 20 empty premises, no late readings dropped
+- [x] Replay-speed test on Kafka: leak, stuck, spike, negative wait 0 intervals; silent 3 (45 min real time)
+- [x] Micro-batch experiment: leak 15.1 s, stuck 19.2 s per cycle; re-reads 4 and 24 intervals per cycle
+- [x] Run 6: full size on regenerated data (empty premises, late readings): 290 of 300 (the 10 water stuck spells under 24 hours, by design), no false alerts, no alerts on 226 empty premises, no late readings dropped
+- [ ] Optional: zones from the landing zone after run 6 (`build_zones.py --source landing`), compare counts, then rebuild from raw (`build_zones.py`). Tested here on small data (same 191,821 readings either way)
+- [x] Warehouse and reports (`build_warehouse.py`, `hive/03_warehouse.sql`, `hive/04_reports.sql`), screenshots for 5.3.5
+- [ ] Benchmark 2 again on the run 6 data, for a screenshot with the new streaming row (`bash scripts/run_benchmark.sh`, 30 to 45 minutes)
+
+Done before:
 
 - [x] First live run of the streaming job with Kafka in the container (1,000 meters: 30 of 30 anomalies detected, no false alerts)
 - [x] Zones built in the container (671,788 cleansed, 4 quarantined, 7,000 daily rows); HBase started and tables created
@@ -40,7 +57,7 @@ Status of the code and the evidence the report needs. Tick items off as they are
 
 ## Evidence for the report
 
-Screenshots go in `screenshots/mac/` (Mac) or `screenshots/other/` (any other setup), named by report section (e.g. `5-3-4_hdfs_raw_zone_load.png`).
+Screenshots go in `screenshots/mac/` (Mac) or `screenshots/other/` (any other setup), named by report section (e.g. `5-3-4_hdfs_raw_zone_load.png`). Screenshots from before the 13 November fix are in `screenshots/mac/superseded/`; RESULTS.md still refers to them for the older runs.
 
 - [x] 5.1 Environment check (`check_tools.sh` output)
 - [x] 5.3.4 HDFS raw zone listing and Hive partitions
@@ -55,8 +72,10 @@ Screenshots go in `screenshots/mac/` (Mac) or `screenshots/other/` (any other se
 - [x] 6 / 7.1 Sensitivity table (`7-1_sensitivity_test.png`)
 - [x] 5.3.4 Zone sizes at full size (`5-3-4_zone_sizes_full_size.png`)
 - [x] 5.3.2 Full-size leak alerts (`5-3-2_full_size_leak_alerts.png`)
-- [ ] 5.3.5 Star schema queries in Hive
+- [x] 5.3.5 Star schema: table counts and the six reports in Hive (`5-3-5_warehouse_counts_rollup_cube.png`, `5-3-5_reports_grouping_sets_billing.png`, `5-3-5_reports_rank_and_missing.png`)
+- [x] 5.5 Replay-speed test table, micro-batch table
+- [x] 7.1 Evaluation table, run 6 (`7-1_evaluation_run6.png`); run 6 data, raw zone, leak alerts and zone sizes (`5-3-4_generate_run6.png`, `5-3-4_raw_zone_run6.png`, `5-3-2_run6_leak_alerts.png`, `5-3-4_zone_sizes_run6.png`)
 - [x] 5.5 Benchmark table, 1,000 meters (`5-5_benchmark_1000_meters.png`)
-- [x] 5.5 Benchmark table, full-size data (`5-5_benchmark_full_size.png`)
+- [x] 5.5 Benchmark table, full-size data (`5-5_benchmark_full_size.png`, run 5; to be replaced by the run 6 benchmark)
 - [x] 7.1 Evaluation table, 1,000-meter run (`7-1_evaluation_results_1000_meters.png`)
 - [x] 7.1 Evaluation table, full-size run (`7-1_evaluation_full_size.png`)

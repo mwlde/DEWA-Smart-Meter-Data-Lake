@@ -15,13 +15,13 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | `data_generator/` | Creates synthetic 15-minute meter readings with injected anomalies |
 | `docker/`, `Dockerfile` | Builds the Hadoop container (see SETUP.md) |
 | `scripts/` | Container setup, loading the raw zone, starting Kafka and HBase, one-command streaming run, resetting a run |
-| `hive/` | Hive table definitions (raw zone, cleansed and curated zones) |
-| `batch/` | Batch layer: builds the cleansed, quarantine and curated zones |
+| `hive/` | Hive table definitions (raw zone, cleansed and curated zones, warehouse) and the reporting queries |
+| `batch/` | Batch layer: builds the cleansed, quarantine and curated zones, and the star schema warehouse |
 | `hbase/` | Example HBase queries on the serving layer |
 | `common/` | Shared error handling (step names and failure banners) |
 | `streaming/` | Replay into Kafka, baseline batch job, streaming detection job, HBase writer |
-| `evaluation/` | Compares alerts with the injected anomalies; sensitivity test for small leaks |
-| `benchmark/` | The same leak check in MapReduce, Hive and Spark batch, and the comparison script |
+| `evaluation/` | Compares alerts with the injected anomalies; sensitivity test for small leaks; replay-speed comparison |
+| `benchmark/` | The same leak check in MapReduce, Hive and Spark batch, the comparison script, and the MapReduce stuck check for the micro-batch experiment |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
 | `logs/` | Output of the detection job from `run_stream.sh` (not committed) |
@@ -60,6 +60,11 @@ Each reading also carries a running total (`cumulative_value`, the meter registe
 | negative | Both | 10% water, 20% electricity | One negative reading (meter fault) |
 
 Every anomaly is written to `data/ground_truth.csv` with its meter and start and end time. The evaluation script compares the pipeline's alerts against this file, which is how detection rate and detection time are measured exactly.
+
+**Normal behaviour that looks like a fault.** The anomalies above are ones we designed the rules to find, so catching them proves the code works more than the method. Two kinds of healthy behaviour are added to test the rules against things they should not flag:
+
+- **Empty premises** (`--vacant-rate`, default 5% of premises): residents away for 3 to 14 days. The water meter reads exactly zero, as a stuck meter would; electricity drops to a base load of 30% (fridge, a/c, standby). Listed in `data/vacancies.csv`. Premises with an injected anomaly are never made empty, and the empty spells use their own random generator, so every other reading is identical to `--vacant-rate 0` data (runs 1 to 5 used `--vacant-rate 0`).
+- **Late readings** (`streaming/replay.py --late-share`, 1% by default in `run_stream.sh`): held back and sent 15 or 30 minutes later, after newer readings of the same meter.
 
 **Calibration.** The daily averages are set so that, averaged over a year, each kind of account uses what DEWA's [Annual Statistics Booklet 2025](https://dewa.gov.ae/-/media/Files/About-DEWA/Annual-Statistics/DEWA_Annual_Statistics_Booklet_2025_EN.ashx) reports (2025 consumption by category, divided by the number of customers in that category and by 365):
 
@@ -124,7 +129,7 @@ Day 1 of the data is history: the batch layer builds each meter's normal range f
 bash scripts/run_stream.sh
 ```
 
-It runs every step in order and says which one it is on: reset the last run, start Kafka and HBase, build the baseline if it is missing, start the detection job in the background, replay the six live days (about 10 minutes), wait for the detection job to stop, then print the evaluation. Add `--no-hbase` to run without HBase.
+It runs every step in order and says which one it is on: reset the last run, start Kafka and HBase, build the baseline if it is missing, start the detection job in the background, replay the six live days (about 10 minutes), wait for the detection job to stop, then print the evaluation. Add `--no-hbase` to run without HBase. Other options: `--interval N` (real seconds per 15-minute interval), `--days N` (replay only the first N live days), `--no-late` (no late readings), `--tag NAME` (also save the evaluation summary, used by the speed test).
 
 The detection job's output (every batch of alerts) goes to `logs/stream.log`. To watch the alerts arrive, open a **second** terminal (new terminal tab, `docker exec -it hadoop bash`, `cd /home/hadoop/dewa`) and run:
 
@@ -164,7 +169,15 @@ Shows the open alerts (one row per meter and alert type), one meter's newest rea
 spark-submit evaluation/evaluate.py 2>/dev/null
 ```
 
-Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies. Latency is taken from each anomaly's first alert: the time from the revealing reading's arrival in Kafka to the moment that alert was computed and ready to publish. It can be run again at any time on the alerts already in HDFS.
+Prints detection rate, false alerts, simulated detection delay and real processing latency per anomaly type, and lists any missed anomalies. Latency is taken from each anomaly's first alert: the time from the revealing reading's arrival in Kafka to the moment that alert was computed and ready to publish. It also prints whether each check waits for later readings, the real time from each anomaly starting to its first alert, the number of incidents (alerts collapsed to one per meter and type), repeated records for the same window, and alerts raised on empty premises. It can be run again at any time on the alerts already in HDFS.
+
+**Replay-speed test** (about 25 minutes):
+
+```
+bash scripts/speed_test.sh
+```
+
+The replay squeezes 15 minutes into 1 second. A check that waits for later readings before it fires looks seconds-fast in the replay but is not in real time. The test makes its own small dataset (1,000 meters, 3 days, replacing what is in `data/` and the raw zone) and runs the stream twice on it, at 1 and at 4 seconds per interval, comparing the median latency over every alert record (hundreds of samples, not just each anomaly's first alert): a check whose latency does not grow when the replay slows down fires on the reading that reveals the anomaly, so its replay latency is its real-world latency. A check that waits for k later intervals gets k x 3 seconds slower. Results in `logs/speed_test_results.md`.
 
 ### 6. Benchmark: why some tools fit and others do not
 
@@ -184,6 +197,36 @@ It then checks that every version found the same leaking meter-nights as the inj
 
 Run it after `run_stream.sh` on the same data, so the streaming row matches.
 
+### 6b. Micro-batch experiment: MapReduce every 15 minutes
+
+```
+bash scripts/run_microbatch.sh
+```
+
+The benchmark above runs each batch tool once over the whole data, as a nightly job would. This experiment asks the harder question: could MapReduce do the streaming job's work by running every 15 minutes? Each cycle runs the leak check on the last hour (4 interval files) and the electricity stuck check on the last 6 hours (24 files) as Hadoop Streaming jobs on YARN, and times them. MapReduce keeps nothing between runs, so each cycle reads its whole window again. Needs data of at least 3 days; about 5 to 10 minutes. Results in `logs/microbatch_results.md`.
+
+### 6c. Reporting warehouse (star schema)
+
+After the zones are built (and after a streaming run, for the alert facts):
+
+```
+spark-submit batch/build_warehouse.py 2>/dev/null
+hive -f hive/03_warehouse.sql 2>/dev/null
+hive -f hive/04_reports.sql 2>/dev/null
+```
+
+A star schema with two fact tables sharing their dimensions (a constellation), in the Hive database `dewa_dw`:
+
+| Table | One row per | Key |
+| --- | --- | --- |
+| `fact_daily_usage` | meter and day (partitioned by month) | `date_id`, `meter_id` |
+| `fact_alert` | meter, alert type and day | `date_id`, `meter_id`, `alert_type_id` |
+| `dim_date` | day: day name, weekend flag, week, month, quarter, year | `date_id` |
+| `dim_meter` | meter, with its premise and area (hierarchy flattened) | `meter_id` |
+| `dim_alert_type` | check: what it detects, when it fires, who acts on it | `alert_type_id` |
+
+`hive/04_reports.sql` holds the reports: water use by month and area with subtotals (ROLLUP), average daily use by premise type and weekday or weekend (CUBE), alerts by area and type (GROUPING SETS), a monthly billing extract per premise, the three biggest users per area (RANK), and missing readings by area. Use data generated after the generator fix of 12 November, or results by premise and area are wrong.
+
 ### 7. Full-size run (final results)
 
 The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.3 GB). Allow about 2 hours in all: the stream takes about 50 minutes and the benchmark 30 to 45. Before starting: close other apps, give Docker at least 8 GB of memory and 4 CPUs (Docker Desktop, Settings, Resources), and stop HBase to free its memory (`hbase-daemon.sh stop rest`, then `stop-hbase.sh`).
@@ -195,10 +238,13 @@ hive -f hive/01_raw_zone.sql 2>/dev/null
 spark-submit --driver-memory 2g batch/build_zones.py 2>/dev/null
 hive -f hive/02_lake_zones.sql 2>/dev/null
 bash scripts/run_stream.sh --no-hbase
+spark-submit --driver-memory 2g batch/build_warehouse.py 2>/dev/null
+hive -f hive/03_warehouse.sql 2>/dev/null
+hive -f hive/04_reports.sql 2>/dev/null
 bash scripts/run_benchmark.sh
 ```
 
-`run_stream.sh` rebuilds the baseline by itself when the raw zone is newer than it. The full-size stream runs without HBase: HBase was shown in runs 3 and 4, and writing 10,000 readings a second through its REST server from one machine would measure that bottleneck rather than the pipeline. To go back to the small dataset, run the same steps with `python3 data_generator/generate.py` (no options).
+`run_stream.sh` rebuilds the baseline by itself when the raw zone is newer than it, and runs the evaluation at the end. The full-size stream runs without HBase: HBase was shown in runs 3 and 4, and writing 10,000 readings a second through its REST server from one machine would measure that bottleneck rather than the pipeline. To go back to the small dataset, run the same steps with `python3 data_generator/generate.py` (no options).
 
 ### 8. Sensitivity test: how small a leak can it catch?
 
@@ -239,12 +285,17 @@ Shell scripts print `FAILED in <script> at line N: <command>`. `2>/dev/null` onl
 
 Thresholds are set at the top of `streaming/detect_stream.py`.
 
-| Alert | Rule |
-| --- | --- |
-| leak | Water meter, every reading in a 1-hour window between 01:00 and 04:00 above 0.5 gallons (minimum night flow analysis) |
-| spike | One reading above 4 times the meter's 99th percentile from the baseline |
-| negative | A negative reading |
-| stuck | Zero consumption for 6 hours |
-| silent | Fewer than 4 readings in a 1-hour window |
+| Alert | Rule | Fires |
+| --- | --- | --- |
+| leak | Water meter, every reading in a 1-hour window between 01:00 and 04:00 above 0.5 gallons (minimum night flow analysis) | On the reading that completes the window (update mode) |
+| spike | One reading above 4 times the meter's 99th percentile from the baseline | On the reading |
+| negative | A negative reading | On the reading |
+| stuck (electricity) | Zero consumption for 6 hours (an empty home still draws power) | On the reading that completes the window (update mode) |
+| stuck (water) | Zero for 24 hours while the premise's electricity over the same day is at least 60% of its normal (occupied) | On the readings that complete the window for both meters (update mode) |
+| silent | Fewer than 4 readings in a 1-hour window | When the 30-minute watermark passes the end of the window (append mode): about 45 minutes after the first missing reading |
 
-**Final result** (run 5: 10,000 meters, 30 days, 28.8 million readings, 300 injected anomalies): all 300 detected, no false alerts. Each anomaly's first alert was ready about 2 seconds after the revealing reading arrived for single-reading checks (spike, negative), and 6 to 7 seconds for window checks (leak, silent, stuck). In the benchmark, every tool found the same 1,370 leak nights; a nightly MapReduce, Hive or Spark batch reports a leak about 2 hours after it shows, the streaming job within 6 seconds. On three times the data (6.5 GB), Spark on YARN was 30% faster than MapReduce and 40% faster than Hive. Full figures and caveats are in [RESULTS.md](RESULTS.md).
+**Why the modes matter.** Until 13 November every check ran in append mode with a 15-minute watermark, so a window alert waited for two later intervals before it fired. The replay squeezes an interval into a second, so those alerts looked 6 seconds fast; in real time they would have come about 30 minutes after the revealing reading. Leak and stuck now fire on the reading that completes their window, which the replay-speed test confirms. Silent has to wait by nature: a missing reading only shows once later ones arrive.
+
+**Restarts.** Each micro-batch's alerts are written to their own folder (`alerts/source=<check>/batch=<id>`) with overwrite, and HBase alert cells carry the window start as their version, so a batch Spark repeats after a crash is written once, not twice. The Kafka `alerts` topic is at-least-once: a consumer should treat meter, type and window start as the alert's key.
+
+**Final result (run 6, 13 November):** 10,000 meters for 30 days with 226 empty premises and 1% of readings arriving late: 290 of 300 anomalies detected (96.7%), no false alerts, no alerts on the empty premises and no late reading dropped. The 10 missed are the water meters stuck for less than a day, which the 24-hour water rule leaves out by design. Leak, stuck, spike and negative alerts come about 2 to 2.6 seconds after the reading that reveals them, without waiting for later readings; silent alerts come about 45 minutes after the first missing reading, because they wait for the watermark. In the benchmark, every tool found the same 1,370 leak nights; on three times the data (6.5 GB), Spark on YARN was 30% faster than MapReduce and 40% faster than Hive. Full figures and caveats are in [RESULTS.md](RESULTS.md).
