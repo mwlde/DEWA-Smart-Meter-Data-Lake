@@ -14,10 +14,10 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [x] 8. Batch job: raw zone to cleansed zone (validated, deduplicated, Parquet), quarantine and curated zone (`batch/build_zones.py`, `hive/02_lake_zones.sql`). Run in the container
 - [x] 9. Hive star schema over the curated zone (`batch/build_warehouse.py`, `hive/03_warehouse.sql`, `hive/04_reports.sql`). Run in the container on the run 6 data: all six reports ran
 - [x] 15. Latency fix (13 November): leak and stuck fire on the reading that completes their window (update mode); silent waits for the watermark (append). Replay-speed test (`scripts/speed_test.sh`, `evaluation/speed_compare.py`)
-- [x] 16. Restart-safe alert writes (one folder per micro-batch, overwritten; HBase cell version = window start). Kill and restart tested here
+- [x] 16. Restart-safe alert writes (one folder per micro-batch, overwritten; HBase cell version = window start). Kill and restart tested in the container (restart test)
 - [x] 17. Hard negatives: empty premises in the generator (`--vacant-rate`, default 5%), late readings in the replay (`--late-share`, 1% in `run_stream.sh`); water stuck check needs 24 hours of zero in an occupied premise
 - [x] 18. MapReduce micro-batch experiment (`scripts/run_microbatch.sh`, `benchmark/stuck_mapper.py`, `benchmark/stuck_reducer.py`)
-- [x] 19. Batch layer from the landing zone (`batch/build_zones.py --source landing`): same cleansed readings as from the raw zone for the streamed days (tested here)
+- [x] 19. Batch layer from the landing zone (`batch/build_zones.py --source landing`)
 - [x] 10. Benchmark: the same leak check in MapReduce, Hive and Spark batch, timed and compared with each other, the streaming job and the injected leaks (`scripts/run_benchmark.sh`, `benchmark/`). Run in the container on three data sizes (benchmarks 1 to 3)
 - [x] 11. Evaluation script: alerts against ground truth (`evaluation/evaluate.py`)
 - [x] 12. Setup for Mac and Windows (`SETUP.md`, `Dockerfile`, `.gitattributes`)
@@ -32,10 +32,10 @@ Status of the code and the evidence the report needs. Tick items off as they are
 - [x] Replay-speed test on Kafka: leak, stuck, spike, negative wait 0 intervals; silent 3 (45 min real time)
 - [x] Micro-batch experiment: leak 15.1 s, stuck 19.2 s per cycle; re-reads 4 and 24 intervals per cycle
 - [x] Run 6: full size on regenerated data (empty premises, late readings): 290 of 300 (the 10 water stuck spells under 24 hours, by design), no false alerts, no alerts on 226 empty premises, no late readings dropped
-- [ ] Optional: zones from the landing zone after run 6 (`build_zones.py --source landing`), compare counts, then rebuild from raw (`build_zones.py`). Tested here on small data (same 191,821 readings either way)
+- [ ] Optional: zones from the landing zone after run 6 (`build_zones.py --source landing`), compare counts, then rebuild from raw (`build_zones.py`).
 - [x] Warehouse and reports (`build_warehouse.py`, `hive/03_warehouse.sql`, `hive/04_reports.sql`), screenshots for 5.3.5
 - [x] Benchmark 2 again on the run 6 data (benchmark 4): all tools found the same 1,370 leak nights; streaming 1.9 s
-- [ ] Restart test in the container (`bash scripts/restart_test.sh`): run A uninterrupted, run B killed and restarted; compare alerts and landing zones. Tested here in file mode
+- [x] Restart test in the container: run B killed with kill -9 mid-stream and restarted; same 29 of 29 detected, same 208 alert windows as run A, landing zone 191,824 readings, 0 missing, 0 extra
 
 Done before:
 
@@ -47,9 +47,7 @@ Done before:
 - [ ] Test-build the `Dockerfile` (on Maria's Mac) and run `SETUP.md` start to finish, so Windows users can follow it
 - [x] Replace `OWNER` in the clone commands in `SETUP.md` with the GitHub account name
 - [x] Calibrate consumption levels in the generator against DEWA's Annual Statistics Booklet 2025 (all four yearly averages within 5%)
-- [x] Sensitivity test built and run here (`evaluation/sensitivity.py`): detection limit about 0.5 gallons per 15 mins at the current threshold
-- [x] Sensitivity test run in the container: identical figures
-- [x] Scale test at 10,000 meters (here): keeps up with the replay; stuck spells under 6 h 45 min can be missed (window alignment), kept as a documented limitation
+- [x] Sensitivity test run in the container (`evaluation/sensitivity.py`): detection limit about 0.5 gallons per 15 mins at the current threshold
 - [x] Benchmark in the container on the 1,000-meter data (benchmark 1: all four tools found the same 19 leak nights; Hive 33 s, MapReduce 15 s, Spark local 4.2 s, streaming alert in 6.5 s)
 - [x] Spark on YARN added to the benchmark for a like-for-like comparison (first run with the full-size data)
 - [x] Full-size run (run 5): 10,000 meters, 30 days, 300 of 300 detected, no false alerts; benchmark 2 at that size

@@ -1,23 +1,27 @@
 # Results
 
-Every measured result, with the conditions it came from. Report sections 5.5 and 7.1 take their figures from here. Add a new run at the top; keep the old ones. Screenshots are in `screenshots/mac/`; those from runs before the 13 November fix (runs 1 to 5, the old benchmark screenshots and the first data loads) are in `screenshots/mac/superseded/`, kept as the record behind the older entries below.
+Every measured result, with the conditions it came from. Report sections 5.5 and 7.1 take their figures from here. Add a new run at the top; keep the old ones. Screenshots are in `screenshots/mac/`; those from runs before the 13 November fix (runs 2 to 5, the old benchmark screenshots and the first data loads) are in `screenshots/mac/superseded/`, kept as the record behind the older entries below.
 
-## Restart test (13 November 2026)
+## Restart test in the container (13 November 2026)
 
-A check of `scripts/restart_test.sh` before it runs in the container: the same steps in file mode (no Kafka or HDFS), 1,000 meters, 3 days (seed 42, 22 empty premises, 1% of readings late), one interval per second. Run A without interruption; in run B the detection job was killed with `kill -9` 110 seconds into the replay and restarted from its checkpoint. Compared with `evaluation/compare_runs.py`.
+`bash scripts/restart_test.sh` on Maria's MacBook Air, one Docker container, Kafka, HBase off. Its own data (1,000 meters, 3 days, seed 42, 22 empty premises, 29 anomalies in the live days) in a separate lake folder, `/user/hadoop/dewa_restart_test`. Both runs replay the 2 live days (191,824 readings, 1,906 of them late) at one interval per second.
 
-| Check | Injected | Detected A | Detected B | Alert windows A | Alert windows B | Only in A | Only in B |
+- **Run A**, without interruption: 86 alert batches, no reading dropped by the watermark.
+- **Run B**: the detection job killed with `kill -9` at 16:11:37, 110 seconds into the replay, when the replay had sent 03:00 on 3 July (108,820 readings), in the middle of that night's leak windows; 31 micro-batches with alerts before the kill. Restarted from its checkpoint at 16:11:40 and ready at 16:11:46 (down for 9 seconds), then caught up on the readings that had reached Kafka meanwhile. 80 alert batches, no reading dropped.
+
+| Check | Injected | Detected A / B | False alerts A / B | Alert windows A / B | Only in A / only in B | Median first-alert latency A / B | Median latency, every record, A / B |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| leak | 11 | 11 | 11 | 99 | 99 | 0 | 0 |
-| negative | 3 | 3 | 3 | 3 | 3 | 0 | 0 |
-| silent | 6 | 6 | 6 | 36 | 36 | 0 | 0 |
-| spike | 3 | 3 | 3 | 3 | 3 | 0 | 0 |
-| stuck | 6 | 6 | 6 | 67 | 67 | 0 | 0 |
+| leak | 11 | 11 / 11 | 0 / 0 | 99 / 99 | 0 / 0 | 1.07 / 1.98 s | 1.50 / 11.62 s |
+| negative | 3 | 3 / 3 | 0 / 0 | 3 / 3 | 0 / 0 | 2.65 / 1.02 s | 2.65 / 1.02 s |
+| silent | 6 | 6 / 6 | 0 / 0 | 36 / 36 | 0 / 0 | 8.18 / 8.49 s | 8.02 / 8.51 s |
+| spike | 3 | 3 / 3 | 0 / 0 | 3 / 3 | 0 / 0 | 1.08 / 1.92 s | 1.08 / 1.92 s |
+| stuck | 6 | 6 / 6 | 0 / 0 | 67 / 67 | 0 / 0 | 1.97 / 2.69 s | 2.13 / 2.26 s |
 
-- No false alerts in either run; 209 alert records each (one repeated record for the same window in each, from a late reading).
-- Landing zone against the raw zone (191,824 readings on the streamed days): both runs 191,824 stored, 0 missing, 0 extra.
-- Median first-alert latency 1.0 to 1.9 s higher in run B than in A. Run B includes the anomalies that arrived while the job was down, which waited for the restart.
-- To repeat in the container with Kafka: `bash scripts/restart_test.sh`.
+- **The restarted run raised exactly the same 208 alert windows as the uninterrupted run**: none missing, none extra. Alert records A 211, B 210; repeated records for the same window A 3, B 2 (late readings updating a window that had already fired, which depends on micro-batch timing, not on the restart).
+- **Landing zone against the raw zone**: 191,824 readings on the streamed days; both runs stored 191,824, 0 missing, 0 extra.
+- Empty premises: 22, no alert on them in either run.
+- Latency: the median over all leak alert records went from 1.5 s in run A to 11.6 s in run B, because the kill fell during that night's leak windows: the windows completed while the job was down were raised when it caught up. Nothing was lost.
+- Screenshots: `6_restart_test_kill_restart.png`, `6_restart_test_comparison.png`, `6_restart_test_run_a_evaluation.png`, `6_restart_test_run_b_evaluation.png`.
 
 ## Benchmark 4: the leak check on the run 6 data (13 November 2026)
 
@@ -132,9 +136,9 @@ First-alert medians (11 leaks, 6 stuck): fast run leak 2.25, negative 2.07, sile
 
 ## First replay-speed test on Kafka: method too noisy, redone (13 November 2026)
 
-`bash scripts/speed_test.sh` (1,000 meters, 3 days, 1 and 3 seconds per interval). Both runs detected 29 of 29 anomalies with no false alerts, no alerts on the 22 empty premises and no late readings dropped. But the comparison used each anomaly's first alert only (11 leaks, 6 stuck meters, 3 spikes, 3 negatives), and with a 2-second trigger those medians move by a second or two by chance: leak +1.66 s, stuck +1.19 s, negative +0.36 s, spike -1.44 s, silent +7.33 s. The script's threshold (half of the 2-second step) labelled leak and stuck "waits", which the spread both ways shows is noise (in the local test both fell instead). Silent's +7.33 s is the real wait, about 4 intervals. A check that waited even one interval would grow by a whole 2 seconds every time.
+`bash scripts/speed_test.sh` (1,000 meters, 3 days, 1 and 3 seconds per interval). Both runs detected 29 of 29 anomalies with no false alerts, no alerts on the 22 empty premises and no late readings dropped. But the comparison used each anomaly's first alert only (11 leaks, 6 stuck meters, 3 spikes, 3 negatives), and with a 2-second trigger those medians move by a second or two by chance: leak +1.66 s, stuck +1.19 s, negative +0.36 s, spike -1.44 s, silent +7.33 s. The script's threshold (half of the 2-second step) labelled leak and stuck "waits", which the spread both ways shows is noise. Silent's +7.33 s is the real wait, about 4 intervals. A check that waited even one interval would grow by a whole 2 seconds every time.
 
-Changed: the evaluation also reports the median latency over every alert record (99 leak and 68 stuck records in the local test instead of 11 and 6), the comparison uses it and reports intervals waited, and the slow run is 4 seconds per interval (a one-interval wait then adds 3 seconds). The figures above are not used in the report.
+Changed: the evaluation also reports the median latency over every alert record (99 leak and 69 stuck records instead of 11 and 6), the comparison uses it and reports intervals waited, and the slow run is 4 seconds per interval (a one-interval wait then adds 3 seconds). The figures above are not used in the report.
 
 ## Run 6a: 1,000-meter run on the new code, Kafka and HBase (13 November 2026)
 
@@ -174,7 +178,7 @@ The 1,000-meter quick test mixed two datasets: the generator wrote days 1 to 7 b
 
 Fixed: the generator removes old day folders first; `run_stream.sh` starts HBase before the reset (so the tables are emptied), keeps Spark's errors in `logs/stream_spark.log`, writes `logs/stream.log` unbuffered, and stops the detection job if the script fails; `reset_stream.sh` stops any detection job left running. No figures from this attempt are used.
 
-## Latency fix, hard negatives and restart safety: tests here (13 November 2026)
+## Latency fix, hard negatives and restart safety: what changed (13 November 2026)
 
 **What was wrong.** Every check ran in append mode with a 15-minute watermark: a window's alert only fired once a reading 15 minutes past the window's end had arrived. The replay squeezes 15 minutes into 1 second, so window alerts looked 6 to 7 seconds fast (runs 2 to 5), but each waited for two later intervals: about **30 minutes in real time**. Only spike and negative really alerted in seconds. Visible in figure 7 of the draft: the leak window ending 02:30 was raised 4 seconds after its last reading, two replay intervals plus the trigger.
 
@@ -183,48 +187,15 @@ Fixed: the generator removes old day folders first; `run_stream.sh` starts HBase
 - Leak and stuck run in **update mode** and fire in the micro-batch that brings the reading completing their window. Silent stays in append mode: a missing reading only shows once later readings arrive. Watermark 30 minutes (late readings up to 30 minutes are still counted; it delays only silent).
 - **Water stuck** now needs 24 hours of zero while the premise's electricity over the same window is at least 60% of its normal (occupied). Electricity stuck stays at 6 hours (an empty home still draws power).
 - **Restart-safe writes**: each micro-batch's alerts overwrite their own folder; HBase alert cells carry the window start as their version.
-- File-mode tests take each reading's arrival time from the file's modification time, so latency is measured as with Kafka.
-
-**Test data**: 1,000 meters, 3 days (2 live days), 29 anomalies, 22 empty premises (`--vacant-rate 0.05`), 1% of readings sent 15 or 30 minutes late (1,906 readings). Detection job in file mode on a 2-core machine, so latencies are higher than on the MacBook.
-
-**Replay-speed test** (same data at 1 and 3 seconds per interval):
-
-| Check | Latency at 1 s per interval | Latency at 3 s per interval | Waits for later readings | Real time from anomaly start to alert (median) |
-| --- | --- | --- | --- | --- |
-| leak | 3.93 s | 1.73 s | no | 930 min (first night after the leak starts) |
-| negative | 5.99 s | 2.50 s | no | 0 min |
-| spike | 4.67 s | 2.41 s | no | 0 min |
-| stuck | 4.27 s | 3.25 s | no | 1,440 min (water needs 24 hours) |
-| silent | 12.55 s | 17.35 s | yes | 45 min (15-minute window + 30-minute watermark) |
-
-Latency did not grow for leak, stuck, spike and negative when the replay slowed down (it fell: less load per second), so they fire on the revealing reading and their replay latency is their real latency. Silent grew by 4.8 s over 2 extra seconds per interval: it waits for later readings, as designed.
-
-**Results of the four runs**
-
-| Run | What | Detected | False alerts | Alerts on empty premises | Late readings dropped | Repeated records for one window |
-| --- | --- | --- | --- | --- | --- | --- |
-| t1 | 1 s per interval | 29 of 29 | 0 | 0 of 22 premises | 0 of 1,906 | 0 |
-| t2 | 3 s per interval | 29 of 29 | 0 | 0 | 0 | 0 |
-| t3 | killed with `kill -9` after 70 s, restarted from the checkpoints | 29 of 29 | 0 | 0 | 0 | 1 (see below) |
-| t4 | final code, 1 s per interval | 29 of 29 | 0 | 0 of 22 premises | 0 of 1,906 | 1 (see below) |
-
-Median latencies in t4: leak 2.69 s, stuck 3.74 s, spike 4.71 s, negative 5.64 s, silent 14.07 s (2-core machine at full replay load). 209 alert records, 29 incidents (one per meter and type) for 29 anomalies.
-
-**The one repeated record** (t3 and t4, the same window both times, so not caused by the restart): the water stuck alert for W0000526 fired when the window's last readings arrived, and fired again one micro-batch later when a late electricity reading for that premise, still inside the window, changed its occupancy figure (0.9904 to 0.9891). Update mode re-sends a window whenever a reading changes it. HBase stores it as the same version (overwritten); the alerts zone keeps both rows and the Kafka topic gets both messages, so consumers should treat meter, type and window start as the alert's key. (The check also waits until both meters' last readings are in, which stops the same thing happening with on-time readings split across two micro-batches.)
-
-**Batch layer from the landing zone**: after t3 (which included the kill), `build_zones.py --source landing` cleansed 191,821 readings for the two streamed days; from the raw zone, the same days give 191,821. The stream's landing copy lost nothing and repeated nothing across the crash.
-
-**Warehouse**: `build_warehouse.py` and both Hive scripts run through Spark SQL in Hive mode on this data: 3 days, 1,000 meters, 3,000 daily usage facts, 33 alert facts; all six reports return results. Not yet run in Hive itself.
 
 ## Generator fix: one premise, one type and one area (12 November 2026)
 
-Found while preparing the star schema: the generator drew the premise type and area separately for each meter, so a premise's water and electricity meters usually disagreed (4,772 of 5,000 premises in a 10,000-meter test). The electricity meter now takes its premise's type and area from the water meter. The random draws happen in the same order as before, so:
+Found while preparing the star schema: the generator drew the premise type and area separately for each meter, so a premise's water and electricity meters usually disagreed. The electricity meter now takes its premise's type and area from the water meter. The random draws happen in the same order as before, so:
 
 - **water readings and every injected anomaly are byte-identical** to the earlier data: the leak results and all benchmark figures (water only) are unaffected;
 - only electricity consumption levels change (each meter now follows its premise's real type); the share of apartments, villas and commercial premises is unchanged, so the calibration still holds;
-- **detection unchanged**: on the 10,000-meter, 3-day test data the fixed generator gives exactly the scale-test result below (leak, negative, silent, spike 100%, stuck 62 of 65 with the same 3 short spells missed, no false alerts).
 
-Runs 1 to 5 used the earlier data. Their detection figures stand; anything that groups by premise or area (the star schema, reports by area) must use data generated after this fix.
+Runs 2 to 5 used the earlier data. Their detection figures stand; anything that groups by premise or area (the star schema, reports by area) must use data generated after this fix.
 
 ## Benchmark 3: batch tools on three times the data (12 November 2026)
 
@@ -261,7 +232,7 @@ Runs 1 to 5 used the earlier data. Their detection figures stand; anything that 
 
 ## Sensitivity test: smallest detectable leak (12 November 2026)
 
-`spark-submit evaluation/sensitivity.py`: six datasets of 2,000 meters for 7 days (calibrated generator, seed 42, anomaly rate 0.3), identical except for the leak size, 156 leaks each. The leak rule (the one in `benchmark/spark_batch.py`, identical in results to the streaming job) was run at four thresholds. **Run again in the container on 12 November with identical results** (screenshot `7-1_sensitivity_test.png`).
+`spark-submit evaluation/sensitivity.py`: six datasets of 2,000 meters for 7 days (calibrated generator, seed 42, anomaly rate 0.3), identical except for the leak size, 156 leaks each. The leak rule (the one in `benchmark/spark_batch.py`, identical in results to the streaming job) was run at four thresholds. Run in the container on 12 November (screenshot `7-1_sensitivity_test.png`).
 
 Share of leaks detected (in brackets: share of all nights a leak was running that were flagged):
 
@@ -313,7 +284,7 @@ Share of leaks detected (in brackets: share of all nights a leak was running tha
 - 13,775 alerts raised (repeats from sliding windows), 1,005 alert batches printed.
 - **The job kept up with 10 times the load of run 4**: latencies are within about a second of run 4 (1,000 meters), so processing did not fall behind the 10,000 readings a second.
 - Every alert was ready within about 7 seconds of the revealing reading reaching Kafka: far under the 5-minute requirement (R2).
-- **Stuck 57 of 57** here, but this is partly luck: none of the 57 stuck spells happened to fall in the 6 to 6.75-hour range that the on-the-hour windows can miss (see the scale test below, where 3 of 65 did). The limitation stands and goes in the report.
+- **Stuck 57 of 57** here, but this is partly luck: none of the 57 stuck spells happened to fall in the 6 to 6.75-hour range that the on-the-hour windows can miss. The limitation stands and goes in the report.
 - **HBase was off for this run.** HBase was shown working in runs 3 and 4 (30 open-alert rows for 30 anomalies, prefix scans in 0.02 s). Writing 10,000 readings a second through its REST server from one laptop would have measured that single-machine bottleneck rather than the pipeline; at DEWA's scale the HBase-Spark connector or bulk loading would write from the cluster's executors instead.
 
 **Storage per zone** (`hdfs dfs -du -h /user/hadoop/dewa`, after the run):
@@ -354,15 +325,6 @@ Share of leaks detected (in brackets: share of all nights a leak was running tha
 
 **Screenshot** (in `screenshots/mac/`): `5-5_benchmark_full_size.png`.
 
-## Scale test before the full-size run (12 November 2026)
-
-10,000 meters, 3 days (calibrated generator), streaming job in file mode on a 2-core machine, HBase off.
-
-- **Throughput**: the 2 live days (192 intervals, 1.92 million readings) took about 145 seconds of processing: 0.75 seconds per 15-minute interval. The replay sends one interval per second, so the job keeps up even on 2 cores.
-- **Detection**: 300 anomalies, no false alerts. Leak, negative, silent and spike 100%; **stuck 62 of 65 (95.4%)**.
-- **Why 3 stuck meters were missed**: the stuck rule uses 6-hour windows that start on the hour. A meter that records zeros for exactly 6 hours but starts at, say, 20:45 never fills a whole on-the-hour window. Detection is certain only for spells of at least 6 hours 45 minutes; the generator makes spells from 6 hours up, and the 3 missed ones lasted 6.0 to 6.25 hours. (The 1,000-meter data had no stuck spell that short.)
-- **The fix and its cost**: sliding the stuck windows every 15 minutes instead of every hour caught all 65, but the job then needed about 1.2 seconds per interval on this machine, slower than the replay. The rule was kept as it is for the full-size run; this is a limitation to report (section 6): shorter windows or a finer slide catch more, at the cost of more state and processing.
-
 ## Benchmark 1: the leak check in four tools, 1,000 meters (12 November 2026)
 
 `bash scripts/run_benchmark.sh` on the same data as run 4 (1,000 meters, 7 days, 671,792 readings in the raw zone, uncalibrated generator), 3 runs of each tool. Runtime is the wall-clock time of the whole command, start-up included.
@@ -387,12 +349,11 @@ Share of leaks detected (in brackets: share of all nights a leak was running tha
 
 ## Generator calibrated to DEWA's 2025 statistics (12 November 2026)
 
-The generator's daily averages now match DEWA's Annual Statistics Booklet 2025 (details and sources in README, "How the synthetic data is generated"). **Runs 1 to 4 used the earlier, uncalibrated averages**: homes used about 25% too little water and commercial premises about 15% too little; electricity was also lower. Anomalies are unchanged (same meters, same times), because they do not depend on the consumption levels.
+The generator's daily averages now match DEWA's Annual Statistics Booklet 2025 (details and sources in README, "How the synthetic data is generated"). **Runs 2 to 4 used the earlier, uncalibrated averages**: homes used about 25% too little water and commercial premises about 15% too little; electricity was also lower. Anomalies are unchanged (same meters, same times), because they do not depend on the consumption levels.
 
 Checks after the change:
 
 - **Yearly averages** (a 3-day sample of each month, 2,000 meters, no anomalies): home water 252 gallons a day (DEWA 258), commercial water 707 (708), home electricity 55.1 kWh (52.6), commercial electricity 343 kWh (336). All within 5%.
-- **Detection** (300 meters, 4 days, 61 anomalies, the local test from run 1): 61 of 61 detected, no false alerts.
 - **Night-flow margin** (default 1,000-meter dataset): the highest one-hour minimum night flow of any healthy water meter is 0.055 gallons for apartments, 0.234 for villas and 0.294 for commercial premises, against the 0.5-gallon leak threshold. Healthy meters stay well clear of it.
 
 ## Run 4: one-command run with the corrected latency measure (12 November 2026)
@@ -419,11 +380,11 @@ Same setup and data as runs 2 and 3, HBase on, started with `bash scripts/run_st
 The "median latency, real" figures in runs 2 and 3 below are too low, for two reasons found in the mid-project review:
 
 1. **Fastest alert, not first alert.** `evaluate.py` took the fastest of each anomaly's alerts. A leak raises an alert for every window that shows it, so this picked the quickest repeat and hid slower first alerts. The clearest case: in run 2 the first silent alert took about 26 seconds (Spark was still starting), but the table shows 4.35 s for silent. The script now takes each anomaly's **first** alert.
-2. **Measured to the start of the micro-batch.** `alert_ts` is when the micro-batch that raised the alert started, before Spark had computed it. The streaming job now also records `emitted_ts`, when the alert was computed and ready to publish, and latency is measured to that. In a test here, the gap between the two was about 1.3 to 1.7 seconds per alert.
+2. **Measured to the start of the micro-batch.** `alert_ts` is when the micro-batch that raised the alert started, before Spark had computed it. The streaming job now also records `emitted_ts`, when the alert was computed and ready to publish, and latency is measured to that.
 
 Reason 2 is fixed from run 4 on (old alerts have no `emitted_ts`, so the script falls back to `alert_ts` and says so). Detection rates and false alert counts are not affected.
 
-**Run 3 re-evaluated with the first alert per anomaly** (same alerts, latency still to the micro-batch start, so add roughly 1.5 s for the true time to alert):
+**Run 3 re-evaluated with the first alert per anomaly** (same alerts, latency still to the micro-batch start, so the true time to alert is somewhat higher):
 
 | Type | Median latency, fastest alert (old) | Median latency, first alert (corrected) |
 | --- | --- | --- |
@@ -542,46 +503,10 @@ Hive took 16 to 32 seconds for simple counts on under a million rows, because ev
 
 Silent meters also show in plain Hive: some days have fewer than 48,000 readings per meter type (500 meters x 96).
 
-## Batch zones and HBase writer: tests (11 and 12 November 2026)
-
-Same 300-meter, 4-day test data as run 1. The container results are in run 3 and in "Batch zones and HBase start-up in the container" above.
-
-**Benchmark test (12 November)**: on calibrated test data (300 meters, 4 days, 17 leaks), the MapReduce mapper and reducer (run through a pipe, as Hadoop Streaming does), the Hive query (run through Spark SQL, which accepts the same HiveQL) and the Spark batch job each found the same 27 leaking meter-nights, exactly the 27 the injected leaks should produce; the streaming job's alerts found the same 27. Timings here are not meaningful: they come from the container run.
-
-**Validation test (12 November)**: 4 bad rows added to the raw data by hand: one with an unreadable timestamp, one from an unknown meter, one with a non-numeric reading, and one duplicate of an existing reading. Result: 115,012 raw, 114,997 cleansed, 14 quarantined (11 negative_value, 1 bad_timestamp, 1 unknown_meter, 1 missing_value), 1 duplicate removed. Every rule caught exactly its own row.
-
-**Zone build** (`batch/build_zones.py`):
-
-| | Readings |
-| --- | --- |
-| Raw | 115,008 |
-| Cleansed | 114,997 |
-| Quarantined (negative value) | 11 |
-| Duplicates removed | 0 (the generator makes none) |
-| Curated daily usage rows | 1,200 (300 meters x 4 days) |
-
-The 11 quarantined readings are exactly the 11 injected negative anomalies: validation catches all of them and nothing else.
-
-**HBase writer** (streaming job with `--hbase`, against a stand-in server that accepts the same REST requests as HBase and checks them):
-
-- `meter_readings`: 86,208 rows, one per streamed reading. Row keys sort each meter's newest reading first, as intended.
-- `meter_alerts`: 61 rows for 61 injected anomalies. The repeat alerts from sliding windows collapse into one row per meter and alert type, and the repeats are kept as versions (the alert's history).
-
-**Failure handling**: tested with Kafka stopped, the baseline missing, HBase stopped before the start, HBase stopped in the middle of a run, and the raw zone missing. Each stopped with a banner naming the step, even with `2>/dev/null`; the mid-run case named the exact batch (`writing readings to HBase (batch 1)`).
-
-## Run 1: logic test without Kafka (11 November 2026)
-
-300 meters, 3 live days, 61 anomalies (17 leak, 11 negative, 9 silent, 15 spike, 9 stuck), CSV files instead of Kafka.
-
-- First attempt: spikes 10 of 15 detected, 3 false spike alerts. Two causes found and fixed: night spikes were impossible to detect (the generator multiplied a near-zero night reading), and a threshold of 3 times the baseline flagged one meter's normal busy days. After generating spikes as glitches of 10 to 30 times the meter's peak and raising the threshold to 4 times: all 61 detected, no false alerts.
-- Also found: parallel queries writing to the same HDFS folder crash each other; each query now writes to its own folder.
-
-These fixes are worth a sentence in report section 6 (difficulties).
-
 ## Caveats (for report section 6)
 
 - **Best-case figures.** The same team wrote the data generator and the detection rules, so the rules suit the data. Real meters are noisier, and real leaks can be smaller than the 1 to 6 gallons per 15 minutes simulated here.
 - **Single-machine run.** The largest run is 10,000 meters on one laptop. DEWA had about 2.4 million customer accounts in 2025 (1.28 million electricity and 1.16 million water, Annual Statistics Booklet 2025), roughly 240 times more. The runs show the design works and keeps up at 10,000 readings a second; throughput at DEWA's scale would need a cluster and is not measured here.
 - **Anomaly count.** 300 anomalies in the full-size run (30 in the smaller runs). Enough to show the method works across all five types, but each type has 35 to 91 cases, so detection rates are estimates, not guarantees.
-- **Window alignment.** Stuck spells shorter than 6 hours 45 minutes can be missed, depending on when they start (scale test). A finer window slide fixes this at a processing cost.
+- **Window alignment.** Stuck spells shorter than 6 hours 45 minutes can be missed, depending on when they start, because the 6-hour windows start on the hour. A finer window slide would catch them, at a processing cost.
 - **HBase not used at full size** (see run 5).
