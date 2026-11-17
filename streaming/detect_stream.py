@@ -1,48 +1,48 @@
 """
-Speed layer: near-real-time anomaly detection on the live meter readings.
+speed layer: near-real-time anomaly detection on the live meter readings.
 
-Reads readings from Kafka (topic meter-readings), and runs five checks with
-Spark Structured Streaming:
+reads readings from kafka (topic meter-readings), and runs five checks with
+spark structured streaming:
 
   leak      water meter with continuous flow in the quiet night hours
             (01:00 to 04:00): every reading in a 1-hour window above 0.5 gallons.
-            This is "minimum night flow" analysis, the standard method utilities
+            this is "minimum night flow" analysis, the standard method utilities
             use: at night a healthy home uses almost nothing.
   spike     one reading more than 4 times the meter's normal maximum (its 99th
             percentile from the batch layer, curated/meter_baseline)
   negative  a negative reading (meter fault)
   stuck     electricity meter: zero for 6 hours (even an empty home draws power).
             water meter: zero for 24 hours while the premise's electricity shows
-            it is occupied. A water meter reading zero is normal in an empty home,
+            it is occupied. a water meter reading zero is normal in an empty home,
             so water alone cannot tell a stuck meter from a vacant one.
   silent    readings missing: fewer than 4 readings in a 1-hour window
 
-When alerts fire. Leak and stuck run in update mode: a window raises its alert
+when alerts fire. leak and stuck run in update mode: a window raises its alert
 in the micro-batch that brings its last qualifying reading, without waiting for
-any later reading. Spike and negative are checked reading by reading. Silent is
+any later reading. spike and negative are checked reading by reading. silent is
 different by nature: a missing reading only shows once later readings have
 arrived, so it runs in append mode and fires when the watermark passes the end
-of its window. The watermark (30 minutes) is how late a reading may arrive and
+of its window. the watermark (30 minutes) is how late a reading may arrive and
 still be counted; it delays only the silent alerts.
 
-Outputs:
-  alerts zone (Parquet)      every alert, for evaluation and reporting
-  Kafka topic "alerts"       with --kafka-alerts, for an operations dashboard
-  HBase (serving layer)      with --hbase: every reading in meter_readings
-                             (row key: meter ID + reversed timestamp, newest first)
-                             and the open alerts in meter_alerts (row key: meter ID
+outputs:
+  alerts zone (parquet)      every alert, for evaluation and reporting
+  kafka topic "alerts"       with --kafka-alerts, for an operations dashboard
+  hbase (serving layer)      with --hbase: every reading in meter_readings
+                             (row key: meter id + reversed timestamp, newest first)
+                             and the open alerts in meter_alerts (row key: meter id
                              + alert type; repeats of the same alert become versions)
-  landing zone (Parquet)     a copy of every reading
+  landing zone (parquet)     a copy of every reading
 
-Before starting it checks Kafka, the baseline and (with --hbase) HBase, and
-stops with a clear message if one is missing. It stops by itself 30 seconds
+before starting it checks kafka, the baseline and (with --hbase) hbase, and
+stops with a clear message if one is missing. it stops by itself 30 seconds
 after the readings stop arriving.
 
-Run inside the container, from /home/hadoop/dewa (see README for the full steps):
+run inside the container, from /home/hadoop/dewa (see README for the full steps):
     spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 \
         streaming/detect_stream.py --kafka-alerts --hbase
 
-Test without Kafka (reads CSV files written by replay.py --to-dir):
+test without kafka (reads csv files written by replay.py --to-dir):
     spark-submit streaming/detect_stream.py --source files --input /tmp/stream_in --once
 """
 
@@ -111,7 +111,7 @@ def parse_args():
 #---------------------------------------------------------------------- checks
 
 def preflight(spark, args):
-    """Stop early, with a clear message, if something the job needs is missing."""
+    """stop early, with a clear message, if something the job needs is missing."""
     if args.source == "kafka" or args.kafka_alerts:
         host, port = args.bootstrap.split(":")
         try:
@@ -306,7 +306,7 @@ def alert_sink(args, name):
 
 
 def hbase_readings_sink(args):
-    """Every reading into HBase: row key = meter ID + reversed timestamp, so a
+    """every reading into hbase: row key = meter id + reversed timestamp, so a
     prefix scan on a meter returns its newest readings first."""
     def emit(batch, batch_id):
         try:
@@ -332,7 +332,7 @@ def hbase_readings_sink(args):
 #---------------------------------------------------------------------- main
 
 class LateReadings(StreamingQueryListener):
-    """Counts readings each check ignored because they arrived later than the
+    """counts readings each check ignored because they arrived later than the
     watermark allows (spark drops them from its windows)."""
     def __init__(self):
         self.dropped = {}
@@ -353,7 +353,7 @@ class LateReadings(StreamingQueryListener):
 
 
 def wait_until_idle(spark, queries, idle_stop):
-    """Run until no new readings have arrived for idle_stop seconds (after the
+    """run until no new readings have arrived for idle_stop seconds (after the
     first readings), then stop every query cleanly. idle_stop 0 = run forever."""
     seen_data, last_data = False, time.time()
     while not spark.streams.awaitAnyTermination(5):
@@ -373,7 +373,7 @@ def main():
     args = parse_args()
     with step("starting Spark"):
         spark = (SparkSession.builder.appName("dewa-anomaly-detection")
-                 .config("spark.sql.session.timeZone", "UTC")      #timestamps are Dubai local time as written
+                 .config("spark.sql.session.timeZone", "UTC")      #timestamps are dubai local time as written
                  .config("spark.sql.shuffle.partitions", "4")      #small single-machine setup
                  .getOrCreate())
         spark.sparkContext.setLogLevel("WARN")

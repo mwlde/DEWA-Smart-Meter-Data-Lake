@@ -1,7 +1,7 @@
 """
-Compares two streaming runs on the same data, for the restart test (scripts/restart_test.sh):
+compares two streaming runs on the same data, for the restart test (scripts/restart_test.sh):
 run A ran without interruption, run B had its detection job killed mid-stream and
-restarted from its checkpoint. If the restart lost or repeated work, it shows here.
+restarted from its checkpoint. if the restart lost or repeated work, it shows here.
 
   detection  injected, detected and false alerts per check in each run (from the
              summaries evaluation/evaluate.py saved)
@@ -10,7 +10,7 @@ restarted from its checkpoint. If the restart lost or repeated work, it shows he
   landing    every reading each run stored in its landing zone, against the raw zone's
              readings for the streamed days: none missing (lost) and none extra (stored twice)
 
-Run inside the container, from /home/hadoop/dewa (restart_test.sh does this):
+run inside the container, from /home/hadoop/dewa (restart_test.sh does this):
     spark-submit evaluation/compare_runs.py --a /user/hadoop/dewa_restart_test/a \
         --b /user/hadoop/dewa_restart_test/b 2>/dev/null
 """

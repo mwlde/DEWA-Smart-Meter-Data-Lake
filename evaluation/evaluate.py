@@ -1,35 +1,35 @@
 """
-Evaluation: compares the alerts raised by the streaming job with the anomalies
+evaluation: compares the alerts raised by the streaming job with the anomalies
 the generator injected (ground truth).
 
-Reports, per anomaly type:
+reports, per anomaly type:
   injected       anomalies in the live part of the stream
   detected       anomalies with at least one matching alert
   detection %    detected / injected
   false alerts   alerts that match no injected anomaly
   delay (sim)    median simulated time from anomaly start to the end of the
                  first alerting window (how long the data took to show it)
-  latency (real) median real seconds, for each anomaly's FIRST alert, from the
-                 arrival in Kafka of the reading that revealed it to the moment
+  latency (real) median real seconds, for each anomaly's first alert, from the
+                 arrival in kafka of the reading that revealed it to the moment
                  the alert was computed and ready to publish (the processing
-                 delay: requirement R2). Alerts from runs before 12 November have
+                 delay: requirement R2). alerts from runs before 12 november have
                  no emitted_ts column; for those the start of the micro-batch
                  that raised the alert (alert_ts) is used instead.
-  waits          whether the check has to wait for LATER readings before it can
-                 fire. The replay squeezes 15 minutes into 1 second, so a check
+  waits          whether the check has to wait for later readings before it can
+                 fire. the replay squeezes 15 minutes into 1 second, so a check
                  that waits for later readings looks seconds-fast in the replay
-                 but is not in real time. Only silent waits (until the watermark
+                 but is not in real time. only silent waits (until the watermark
                  passes the end of its window).
   real time      median time from the anomaly starting to its first alert, in
                  real minutes: the simulated delay, plus the watermark for
                  silent (see waits), plus the processing seconds.
-  incidents      alerts collapsed to one per meter and type (what the HBase
+  incidents      alerts collapsed to one per meter and type (what the hbase
                  open-alerts table shows an operator)
 
-An alert matches an anomaly when it is for the same meter and type and its
+an alert matches an anomaly when it is for the same meter and type and its
 window overlaps the anomaly (with 1 hour of slack after the anomaly ends).
 
-Run inside the container, from /home/hadoop/dewa, after the streaming job:
+run inside the container, from /home/hadoop/dewa, after the streaming job:
     spark-submit evaluation/evaluate.py 2>/dev/null
 """
 
@@ -77,7 +77,7 @@ def main():
                  "run the streaming job first (README, section 3)")
         print(f"  {n_truth} injected anomalies in the live stream, {n_alerts} alerts raised")
 
-    #time the alert was ready: emitted_ts from 12 November on, else the micro-batch start
+    #time the alert was ready: emitted_ts from 12 november on, else the micro-batch start
     ready_col = "emitted_ts" if "emitted_ts" in alerts.columns else "alert_ts"
     print(f"  latency measured to: {ready_col}")
     alerts = alerts.withColumn("latency_s", F.col(ready_col).cast("double") - F.col("last_ingest_ts").cast("double"))
@@ -89,7 +89,7 @@ def main():
                   (F.col("a.window_end") >= F.col("t.start")))
 
     matched = t.join(a, match_cond, "left")
-    #latency of the FIRST alert for each anomaly (the one an operator would act on),
+    #latency of the first alert for each anomaly (the one an operator would act on),
     #not the fastest of its repeats
     per_anomaly = (matched.groupBy("t.anomaly_id", "t.meter_id", "t.anomaly_type", "t.start")
                    .agg(F.count("a.alert_type").alias("alerts"),

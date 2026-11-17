@@ -1,31 +1,31 @@
 """
-Batch layer: builds the cleansed and curated zones of the data lake from the raw zone.
+batch layer: builds the cleansed and curated zones of the data lake from the raw zone.
 
-  raw zone       CSV exactly as received (scripts/load_raw_zone.sh)
-  cleansed zone  typed, validated, deduplicated readings (Parquet, partitioned by day)
+  raw zone       csv exactly as received (scripts/load_raw_zone.sh)
+  cleansed zone  typed, validated, deduplicated readings (parquet, partitioned by day)
   quarantine     readings that failed validation, with the reason, kept for checking
-  curated zone   analysis-ready tables (Parquet):
+  curated zone   analysis-ready tables (parquet):
                    dim_meter          one row per meter
                    daily_meter_usage  one row per meter per day: total use, number of
                                       readings, highest reading, lowest night flow
 
-The curated tables are what the Hive star schema (reporting layer) is built on.
+the curated tables are what the hive star schema (reporting layer) is built on.
 
-Validation rules (a reading goes to quarantine if any fails):
+validation rules (a reading goes to quarantine if any fails):
   bad_timestamp   timestamp cannot be parsed
-  unknown_meter   meter ID not in the meter list
+  unknown_meter   meter id not in the meter list
   missing_value   consumption missing or not a number
   negative_value  negative consumption (a meter fault)
-Duplicates (same meter and timestamp) are removed, keeping one copy.
+duplicates (same meter and timestamp) are removed, keeping one copy.
 
-Source: by default the raw zone, the CSV files loaded by scripts/load_raw_zone.sh
-(day 1 included, which the stream never sends: it is the baseline history). With
+source: by default the raw zone, the csv files loaded by scripts/load_raw_zone.sh
+(day 1 included, which the stream never sends: it is the baseline history). with
 --source landing it reads the landing zone instead: every reading that arrived
-through Kafka, as the streaming job stored it. That is the single-ingestion path of
-the architecture (Kafka feeds both layers); the two sources give the same cleansed
+through kafka, as the streaming job stored it. that is the single-ingestion path of
+the architecture (kafka feeds both layers); the two sources give the same cleansed
 readings for the streamed days.
 
-Run inside the container, from /home/hadoop/dewa:
+run inside the container, from /home/hadoop/dewa:
     spark-submit batch/build_zones.py 2>/dev/null
     spark-submit batch/build_zones.py --source landing 2>/dev/null
 """
@@ -56,7 +56,7 @@ def main():
 
     with step("starting Spark"):
         spark = (SparkSession.builder.appName("dewa-build-zones")
-                 .config("spark.sql.session.timeZone", "UTC")   #timestamps are Dubai local time as written
+                 .config("spark.sql.session.timeZone", "UTC")   #timestamps are dubai local time as written
                  .config("spark.sql.shuffle.partitions", "8")
                  .getOrCreate())
         spark.sparkContext.setLogLevel("WARN")

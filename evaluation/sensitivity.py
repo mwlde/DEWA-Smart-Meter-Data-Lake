@@ -1,22 +1,22 @@
 """
-Sensitivity test: how small a leak can the night-flow rule catch, and what does a
+sensitivity test: how small a leak can the night-flow rule catch, and what does a
 lower alarm threshold cost in false alerts?
 
-For each leak size range it generates a fresh dataset (same meters, same anomaly
+for each leak size range it generates a fresh dataset (same meters, same anomaly
 times, only the leak sizes differ), then runs the leak rule at several thresholds.
-The rule is the one in benchmark/spark_batch.py, which found exactly the same leak
+the rule is the one in benchmark/spark_batch.py, which found exactly the same leak
 nights as the streaming job in both benchmarks, so this is a fast batch run of
 the same check rather than one streaming run per setting.
 
-Reported for every leak size and threshold:
+reported for every leak size and threshold:
   detection    share of leaks flagged on at least one night after they started
   nights       share of the nights a leak was running that were flagged
 and for every threshold:
   false alerts meter-nights flagged where no leak was running
 
-Run inside the container, from /home/hadoop/dewa (Hadoop not needed; about 3 to 5 mins):
+run inside the container, from /home/hadoop/dewa (hadoop not needed; about 3 to 5 mins):
     spark-submit evaluation/sensitivity.py 2>/dev/null
-The datasets go to /tmp/dewa_sensitivity (local disk, deleted at the end); the table
+the datasets go to /tmp/dewa_sensitivity (local disk, deleted at the end); the table
 is printed and saved to logs/sensitivity_results.md.
 """
 

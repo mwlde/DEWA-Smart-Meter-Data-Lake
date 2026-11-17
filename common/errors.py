@@ -1,12 +1,12 @@
 """
-Loud failure handling shared by the Spark scripts.
+loud failure handling shared by the spark scripts.
 
-Every script announces each step as it starts ("[step] ..."), and if anything
-goes wrong prints a banner naming the step, the error and what to do. The
+every script announces each step as it starts ("[step] ..."), and if anything
+goes wrong prints a banner naming the step, the error and what to do. the
 banner goes to standard output, so it still shows when the command ends in
-2>/dev/null (which hides Spark's own log output). Printed once only: spark-submit
-merges a Python script's standard error into its standard output, so printing it
-to both showed it twice. Spark's Java errors still go to standard error: rerun
+2>/dev/null (which hides spark's own log output). printed once only: spark-submit
+merges a python script's standard error into its standard output, so printing it
+to both showed it twice. spark's java errors still go to standard error: rerun
 without 2>/dev/null to see them.
 """
 
@@ -18,7 +18,7 @@ _current = {"step": "starting up", "shown": False}
 
 
 def banner(step, message, hint=None):
-    """Print a failure banner without exiting (use inside streaming callbacks)."""
+    """print a failure banner without exiting (use inside streaming callbacks)."""
     lines = ["", "!" * 72, f"FAILED at step: {step}", f"Error: {message}"]
     if hint:
         lines.append(f"What to do: {hint}")
@@ -29,21 +29,21 @@ def banner(step, message, hint=None):
 
 
 def fail(step, message, hint=None):
-    """Print a failure banner and stop the script."""
+    """print a failure banner and stop the script."""
     banner(step, message, hint)
     sys.exit(1)
 
 
 @contextmanager
 def step(name):
-    """Mark the start of a step, so a failure inside it is reported by name."""
+    """mark the start of a step, so a failure inside it is reported by name."""
     _current["step"] = name
     print(f"[step] {name}", flush=True)
     yield
 
 
 def run(main):
-    """Run main(); turn any uncaught error into a banner naming the current step."""
+    """run main(); turn any uncaught error into a banner naming the current step."""
     try:
         main()
     except SystemExit:

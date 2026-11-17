@@ -1,15 +1,15 @@
 """
-Benchmark: compares the timed runs and checks every version found the same leaks.
+benchmark: compares the timed runs and checks every version found the same leaks.
 
-For MapReduce, Hive and Spark batch it reads the timings (logs/benchmark_times.csv,
+for mapreduce, hive and spark batch it reads the timings (logs/benchmark_times.csv,
 written by scripts/run_benchmark.sh) and each tool's output, and checks the
-leaking meter-nights against the injected leaks (ground truth). For Spark
-Streaming it uses the leak alerts and the latency from the last streaming run
+leaking meter-nights against the injected leaks (ground truth). for spark
+streaming it uses the leak alerts and the latency from the last streaming run
 (scripts/run_stream.sh), if there is one.
 
-Prints the benchmark table and saves it to logs/benchmark_results.md.
+prints the benchmark table and saves it to logs/benchmark_results.md.
 
-Run by scripts/run_benchmark.sh, or alone with:
+run by scripts/run_benchmark.sh, or alone with:
     spark-submit benchmark/compare.py 2>/dev/null
 """
 
@@ -38,7 +38,7 @@ FMT = "%Y-%m-%dT%H:%M:%S"
 
 
 def code_lines(paths):
-    """Lines of code without blank lines, comments and docstrings (rough, for comparison)."""
+    """lines of code without blank lines, comments and docstrings (rough, for comparison)."""
     n = 0
     for p in paths:
         in_doc = False
@@ -58,7 +58,7 @@ def code_lines(paths):
 
 
 def expected_nights(truth_rows, days):
-    """Meter-nights where an injected leak covers a full hour between 01:00 and 03:45."""
+    """meter-nights where an injected leak covers a full hour between 01:00 and 03:45."""
     out = set()
     for meter, start, end in truth_rows:
         s, e = datetime.strptime(start, FMT), datetime.strptime(end, FMT)

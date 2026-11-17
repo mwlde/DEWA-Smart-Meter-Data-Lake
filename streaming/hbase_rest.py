@@ -1,11 +1,11 @@
 """
-Minimal client for the HBase REST server (standard library only).
+minimal client for the hbase rest server (standard library only).
 
-HBase's REST server accepts JSON "cell sets": every row key, column name and
-value is base64-encoded. Many rows go in one PUT request.
+hbase's rest server accepts json "cell sets": every row key, column name and
+value is base64-encoded. many rows go in one PUT request.
 
-Writes happen on the Spark driver, one request per micro-batch (a few thousand
-rows). That is fine at project scale; at DEWA's scale the HBase-Spark connector
+writes happen on the spark driver, one request per micro-batch (a few thousand
+rows). that is fine at project scale; at dewa's scale the hbase-spark connector
 or bulk loading would write from the executors instead.
 """
 
@@ -22,7 +22,7 @@ def _b64(s):
 
 
 def check(url, timeout=5):
-    """Return None if the REST server answers, else the error text."""
+    """return None if the rest server answers, else the error text."""
     try:
         with urllib.request.urlopen(f"{url}/version/cluster", timeout=timeout) as r:
             r.read()
@@ -49,7 +49,7 @@ def _cell(col, val, ts):
 
 def put_rows(url, table, rows, timeout=30):
     """rows: list of (row_key, {"family:qualifier": value}) or (row_key, cells, version_ms).
-    Values become strings."""
+    values become strings."""
     for i in range(0, len(rows), CHUNK):
         body = {"Row": [
             {"key": _b64(row[0]),

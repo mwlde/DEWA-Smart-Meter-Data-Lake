@@ -1,7 +1,7 @@
 """
-Reporting layer: builds the data warehouse from the curated zone and the alerts zone.
+reporting layer: builds the data warehouse from the curated zone and the alerts zone.
 
-It is a star schema with two fact tables sharing their dimensions (a constellation):
+it is a star schema with two fact tables sharing their dimensions (a constellation):
 
   dim_date           one row per day: day of week, weekend flag, week, month, quarter, year
   dim_meter          one row per meter with its premise and area (the meter, premise and
@@ -10,15 +10,15 @@ It is a star schema with two fact tables sharing their dimensions (a constellati
   fact_daily_usage   one row per meter per day (the grain), partitioned by month
   fact_alert         one row per meter, alert type and day
 
-Surrogate keys: date_id (yyyymmdd as a number), meter_id and alert_type_id (numbers
-from 1). The meter's own number (W0000001) is kept as meter_number. Each fact table's
+surrogate keys: date_id (yyyymmdd as a number), meter_id and alert_type_id (numbers
+from 1). the meter's own number (W0000001) is kept as meter_number. each fact table's
 primary key is the combination of its foreign keys.
 
-The Hive tables over these files are in hive/03_warehouse.sql, the reporting queries
-in hive/04_reports.sql. Data made before the generator fix of 12 November (premise
+the hive tables over these files are in hive/03_warehouse.sql, the reporting queries
+in hive/04_reports.sql. data made before the generator fix of 12 november (premise
 type and area per premise) gives wrong results by premise and area: regenerate first.
 
-Run inside the container, from /home/hadoop/dewa, after batch/build_zones.py (and after
+run inside the container, from /home/hadoop/dewa, after batch/build_zones.py (and after
 a streaming run, for fact_alert):
     spark-submit batch/build_warehouse.py 2>/dev/null
 """
@@ -57,7 +57,7 @@ def main():
 
     with step("starting Spark"):
         spark = (SparkSession.builder.appName("dewa-build-warehouse")
-                 .config("spark.sql.session.timeZone", "UTC")   #timestamps are Dubai local time as written
+                 .config("spark.sql.session.timeZone", "UTC")   #timestamps are dubai local time as written
                  .config("spark.sql.shuffle.partitions", "8")
                  .getOrCreate())
         spark.sparkContext.setLogLevel("WARN")

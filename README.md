@@ -15,7 +15,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | --- | --- |
 | `data_generator/` | Creates synthetic 15-minute meter readings with injected anomalies |
 | `docker/`, `Dockerfile` | Builds the Hadoop container (see SETUP.md) |
-| `scripts/` | Container setup, loading the raw zone, starting Kafka and HBase, one-command streaming run, resetting a run |
+| `scripts/` | Container setup and tool check, loading the raw zone, starting Kafka and HBase, the one-command streaming run and its reset, the HBase queries, and one script per experiment (benchmark, micro-batch, replay speed, restart) |
 | `hive/` | Hive table definitions (raw zone, cleansed and curated zones, warehouse) and the reporting queries |
 | `batch/` | Batch layer: builds the cleansed, quarantine and curated zones, and the star schema warehouse |
 | `hbase/` | Example HBase queries on the serving layer |
@@ -25,7 +25,7 @@ A data lake design for DEWA's smart meter network: Kafka ingestion, a Spark Stru
 | `benchmark/` | The same leak check in MapReduce, Hive and Spark batch, the comparison script, and the MapReduce stuck check for the micro-batch experiment |
 | `screenshots/` | Screenshots for the report, named by report section: `mac/` for the Mac run, `other/` for any other setup (Windows, Linux) |
 | `data/` | Generated data (not committed: regenerate it with the script) |
-| `logs/` | Output of the detection job from `run_stream.sh` (not committed) |
+| `logs/` | Output of the streaming run (`stream.log`) and of each experiment script, such as `benchmark_results.md` (not committed) |
 
 ## How the synthetic data is generated
 
@@ -92,7 +92,7 @@ All commands below are typed inside the container, from `/home/hadoop/dewa` (see
 python3 data_generator/generate.py
 ```
 
-A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project dataset: `--meters 10000 --days 30` (about 28.8 million readings, about 2.3 GB). `--days` must be at least 3.
+A quick test set: 1,000 meters for 7 days, about 670,000 readings. Full project dataset: `--meters 10000 --days 30` (about 28.8 million readings, about 2.2 GB). `--days` must be at least 3.
 
 | File | What it is |
 | --- | --- |
@@ -196,7 +196,7 @@ A star schema with two fact tables sharing their dimensions (a constellation), i
 
 ### 7. Full-size run (final results)
 
-The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.3 GB). Allow about 2 hours in all: the stream takes about 50 minutes and the benchmark 30 to 45. Before starting: close other apps, give Docker at least 8 GB of memory and 4 CPUs (Docker Desktop, Settings, Resources; the final runs used 12 GB and 10 CPUs), and stop HBase to free its memory (`hbase-daemon.sh stop rest`, then `stop-hbase.sh`).
+The same steps on 10,000 meters for 30 days (28.8 million readings, about 2.2 GB). Allow about 2 hours in all: the stream takes about 50 minutes and the benchmark 30 to 45. Before starting: close other apps, give Docker at least 8 GB of memory and 4 CPUs (Docker Desktop, Settings, Resources; the final runs used 12 GB and 10 CPUs), and stop HBase to free its memory (`hbase-daemon.sh stop rest`, then `stop-hbase.sh`).
 
 ```
 python3 data_generator/generate.py --meters 10000 --days 30
@@ -269,7 +269,7 @@ Generates six datasets that differ only in leak size (from 0.1 up to the normal 
 
 ### Bigger batch-only benchmark (optional)
 
-At 2.3 GB, every batch tool's runtime is mostly start-up. To see how the tools compare when there is more work to do, run the benchmark alone on three times the data (30,000 meters, 30 days, about 86 million readings, about 7 GB). The stream is not run on this data, so the streaming row is left out. This replaces the raw zone.
+At 2.2 GB, every batch tool's runtime is mostly start-up. To see how the tools compare when there is more work to do, run the benchmark alone on three times the data (30,000 meters, 30 days, about 86 million readings, about 6.5 GB). The stream is not run on this data, so the streaming row is left out. This replaces the raw zone.
 
 ```
 python3 data_generator/generate.py --meters 30000 --days 30

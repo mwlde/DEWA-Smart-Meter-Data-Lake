@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Micro-batch experiment, MapReduce version of the electricity stuck check: the reducer.
+micro-batch experiment, mapreduce version of the electricity stuck check: the reducer.
 
-Receives one meter's readings for the trailing 6 hours (the job's input is the last
-24 interval files). Output, one line per stuck meter:  meter_id,readings
-MapReduce keeps nothing between runs, so every run reads the whole 6 hours again.
+receives one meter's readings for the trailing 6 hours (the job's input is the last
+24 interval files). output, one line per stuck meter:  meter_id,readings
+mapreduce keeps nothing between runs, so every run reads the whole 6 hours again.
 """
 
 import sys

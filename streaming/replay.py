@@ -1,27 +1,27 @@
 """
-Replays the generated meter readings as a live stream.
+replays the generated meter readings as a live stream.
 
-Readings are sent in time order, one 15-minute interval at a time: all meters'
-readings for 00:00, then a pause, then all readings for 00:15, and so on. The
+readings are sent in time order, one 15-minute interval at a time: all meters'
+readings for 00:00, then a pause, then all readings for 00:15, and so on. the
 pause sets the speed: with --interval 1, one simulated day passes in 96 seconds.
 
-Day 1 is skipped by default: it is the "history" the batch layer uses to build
-each meter's normal range (streaming/baseline.py). Days 2 onwards arrive live.
+day 1 is skipped by default: it is the "history" the batch layer uses to build
+each meter's normal range (streaming/baseline.py). days 2 onwards arrive live.
 
-Each line is printed as  meter_id|reading-as-csv  so kafka-console-producer can
-use the meter ID as the message key (all readings of one meter go to the same
-Kafka partition, in order).
+each line is printed as  meter_id|reading-as-csv  so kafka-console-producer can
+use the meter id as the message key (all readings of one meter go to the same
+kafka partition, in order).
 
-Usage, inside the container, from /home/hadoop/dewa:
+usage, inside the container, from /home/hadoop/dewa:
     python3 streaming/replay.py --interval 1 | kafka-console-producer.sh \
         --bootstrap-server localhost:9092 --topic meter-readings \
         --property parse.key=true --property key.separator='|'
 
-Or write to files instead of Kafka (used for testing without Kafka):
+or write to files instead of kafka (used for testing without kafka):
     python3 streaming/replay.py --interval 0 --to-dir /tmp/stream_in
 
-Late readings (--late-share): real meter networks do not deliver every reading
-on time. With --late-share 0.01 --late-max 2, 1% of readings are held back and
+late readings (--late-share): real meter networks do not deliver every reading
+on time. with --late-share 0.01 --late-max 2, 1% of readings are held back and
 sent 1 or 2 intervals (15 or 30 minutes) later, after newer readings of the same
 meter: out of order, as a retrying meter would send them.
 """

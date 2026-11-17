@@ -1,35 +1,35 @@
 """
-Synthetic DEWA smart meter readings since we dont have access to the real data :(
+synthetic dewa smart meter readings since we dont have access to the real data :(
 
-Generates 15-minute interval readings for a set of water and electricity
+generates 15-minute interval readings for a set of water and electricity
 meters, injects anomalies at known times, and writes a ground-truth file so
 detection can be measured exactly.
 
-Standard library only: no pip install needed.
+standard library only: no pip install needed.
 
-Quick test (1,000 meters, 7 days, about 670,000 readings):
+quick test (1,000 meters, 7 days, about 670,000 readings):
     python3 data_generator/generate.py
 
-Full project run (10,000 meters, 30 days, about 28.8 million readings):
+full project run (10,000 meters, 30 days, about 28.8 million readings):
     python3 data_generator/generate.py --meters 10000 --days 30
 
-Output (in --out, default ./data):
+output (in --out, default ./data):
     meters.csv                              one row per meter
     readings/dt=YYYY-MM-DD/readings.csv     one file per day (HDFS/Hive friendly)
     ground_truth.csv                        every injected anomaly
     vacancies.csv                           every empty spell (normal behaviour, not an anomaly)
 
-Empty premises (--vacant-rate, default 5% of premises): the residents are away for
+empty premises (--vacant-rate, default 5% of premises): the residents are away for
 3 to 14 days, so the water meter reads exactly zero and the electricity meter only
-shows a base load (fridge, a/c, standby: 30% of normal). These are not anomalies:
+shows a base load (fridge, a/c, standby: 30% of normal). these are not anomalies:
 they are in the data to test that the detection rules do not flag normal behaviour
-that looks like a fault (a stuck water meter also reads zero). Premises with an
-injected anomaly are never made empty. They use their own random generator, so
+that looks like a fault (a stuck water meter also reads zero). premises with an
+injected anomaly are never made empty. they use their own random generator, so
 every other reading is identical to data made with --vacant-rate 0.
 
-All timestamps are Dubai local time (Gulf Standard Time, UTC+4).
-Water is in imperial gallons, the unit of DEWA's annual statistics (DEWA bills
-in cubic metres since March 2025; 1 m3 = 219.9692 IG). Electricity is in kWh.
+all timestamps are dubai local time (gulf standard time, utc+4).
+water is in imperial gallons, the unit of dewa's annual statistics (dewa bills
+in cubic metres since march 2025; 1 m3 = 219.9692 IG). electricity is in kWh.
 """
 
 import argparse
@@ -41,7 +41,7 @@ import shutil
 from datetime import datetime, timedelta
 
 
-#average daily consumption per premise type, calibrated to the DEWA annual statistics
+#average daily consumption per premise type, calibrated to the dewa annual statistics
 #booklet 2025 (consumption by category / customers by category / 365):
 #  residential water 92,857 MIG / 986,291 = 258 IG per account per day
 #  commercial water 42,548 MIG / 164,683 = 708 IG per account per day
@@ -120,7 +120,7 @@ def make_meters(n, rng):
 
 
 def plan_anomalies(meters, start, days, rate, rng, leak_min=1.0, leak_max=6.0):
-    """Pick meters and inject one anomaly each, with known start and end."""
+    """pick meters and inject one anomaly each, with known start and end."""
     total_intervals = days * INTERVALS_PER_DAY
     plans = {}
     for m in meters:
@@ -154,7 +154,7 @@ VACANT_ELEC_SHARE = 0.3   #an empty home's electricity, as a share of its normal
 
 
 def plan_vacancies(meters, plans, days, rate, seed):
-    """Pick premises that are empty for a while. Own random generator, so the
+    """pick premises that are empty for a while. own random generator, so the
     main readings do not change."""
     vrng = random.Random(seed + 1000)
     total = days * INTERVALS_PER_DAY

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Micro-batch experiment, MapReduce version of the electricity stuck check: the mapper.
+micro-batch experiment, mapreduce version of the electricity stuck check: the mapper.
 
-Same rule as the streaming job: an electricity meter with zero consumption in every
-reading for 6 hours. The mapper sends each electricity reading to the reducer for
+same rule as the streaming job: an electricity meter with zero consumption in every
+reading for 6 hours. the mapper sends each electricity reading to the reducer for
 its meter:  key = meter_id   value = ts,value
 """
 

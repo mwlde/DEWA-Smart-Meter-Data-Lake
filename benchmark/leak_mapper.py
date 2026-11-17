@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Benchmark, MapReduce version (Hadoop Streaming): the mapper.
+benchmark, mapreduce version (hadoop streaming): the mapper.
 
-Same leak rule as the streaming job: a water meter whose readings stay above
+same leak rule as the streaming job: a water meter whose readings stay above
 0.5 imperial gallons for 4 readings in a row (one hour) between 01:00 and 03:45.
 
-The mapper keeps only night readings of water meters and sends each one to the
+the mapper keeps only night readings of water meters and sends each one to the
 reducer for its meter and night:  key = meter_id,night   value = ts,value
 """
 

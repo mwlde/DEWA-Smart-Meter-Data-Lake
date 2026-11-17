@@ -1,17 +1,17 @@
 """
-Replay-speed test: compares two evaluation summaries made at different replay speeds,
+replay-speed test: compares two evaluation summaries made at different replay speeds,
 to show which checks wait for later readings and what that means in real time.
 
-The replay squeezes 15 minutes into --interval real seconds. A check that fires on
+the replay squeezes 15 minutes into --interval real seconds. a check that fires on
 the reading that reveals the anomaly has the same latency at any replay speed (it is
-only processing time). A check that has to wait for later readings gets slower when
+only processing time). a check that has to wait for later readings gets slower when
 the replay slows down, by the number of intervals it waits times the extra seconds
-per interval. In production an interval is 15 real minutes, so:
+per interval. in production an interval is 15 real minutes, so:
 
     intervals waited = (latency slow - latency fast) / (interval slow - interval fast)
     real-world wait  = intervals waited x 15 minutes
 
-Run by scripts/speed_test.sh, or alone:
+run by scripts/speed_test.sh, or alone:
     spark-submit evaluation/speed_compare.py --fast /user/hadoop/dewa/speed_test/fast \
         --slow /user/hadoop/dewa/speed_test/slow --fast-interval 1 --slow-interval 4
 """

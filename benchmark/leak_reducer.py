@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Benchmark, MapReduce version (Hadoop Streaming): the reducer.
+benchmark, mapreduce version (hadoop streaming): the reducer.
 
-Receives one meter's night readings (sorted by key, so all readings of one
+receives one meter's night readings (sorted by key, so all readings of one
 meter and night arrive together), puts them in time order and counts the
 1-hour windows (4 consecutive 15-minute readings) where every reading is
-above 0.5 gallons. Output, one line per leaking meter and night:
+above 0.5 gallons. output, one line per leaking meter and night:
     meter_id,night,leak_windows
 """
 

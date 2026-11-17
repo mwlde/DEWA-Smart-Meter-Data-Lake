@@ -1,12 +1,12 @@
 """
-Benchmark, Spark batch version: the same night-flow leak rule as the streaming
-job, run once over the whole raw zone with DataFrame window functions.
+benchmark, spark batch version: the same night-flow leak rule as the streaming
+job, run once over the whole raw zone with dataframe window functions.
 
-Writes one line per leaking meter and night to {base}/benchmark/{out-name}:
+writes one line per leaking meter and night to {base}/benchmark/{out-name}:
     meter_id,night,leak_windows
 
-Run by scripts/run_benchmark.sh twice: in local mode (Spark inside the container)
-and on YARN (like MapReduce and Hive), or alone with:
+run by scripts/run_benchmark.sh twice: in local mode (spark inside the container)
+and on yarn (like mapreduce and hive), or alone with:
     spark-submit benchmark/spark_batch.py 2>/dev/null
     spark-submit --master yarn benchmark/spark_batch.py --out-name spark_batch_yarn 2>/dev/null
 """
@@ -26,9 +26,9 @@ READING_SCHEMA = ("meter_id STRING, meter_type STRING, premise_id STRING, area S
 
 
 def leak_nights(raw, min_flow=0.5):
-    """The night-flow leak rule on a DataFrame of raw readings: one row per leaking
+    """the night-flow leak rule on a dataframe of raw readings: one row per leaking
     meter and night, with the number of 1-hour windows that were all above min_flow.
-    Also used by evaluation/sensitivity.py, so both test exactly the same rule."""
+    also used by evaluation/sensitivity.py, so both test exactly the same rule."""
     night = (raw.where((F.col("meter_type") == "water") & F.substring("ts", 12, 2).isin("01", "02", "03"))
              .withColumn("night", F.substring("ts", 1, 10)))
     w = Window.partitionBy("meter_id", "night").orderBy("ts").rowsBetween(0, 3)

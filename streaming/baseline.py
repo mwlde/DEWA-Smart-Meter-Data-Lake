@@ -1,14 +1,14 @@
 """
-Batch layer: builds each meter's normal range from historical readings.
+batch layer: builds each meter's normal range from historical readings.
 
-Takes the first day of the raw zone as history (the replay script streams the
+takes the first day of the raw zone as history (the replay script streams the
 later days as "live" data), computes each meter's 99th percentile 15-minute
-reading, and saves it to the curated zone. The streaming job joins against this
+reading, and saves it to the curated zone. the streaming job joins against this
 table to spot spikes: a reading far above what that meter normally does.
 
-This is the batch layer feeding the speed layer (Lambda architecture).
+this is the batch layer feeding the speed layer (lambda architecture).
 
-Run inside the container, from /home/hadoop/dewa:
+run inside the container, from /home/hadoop/dewa:
     spark-submit streaming/baseline.py 2>/dev/null
 """
 
